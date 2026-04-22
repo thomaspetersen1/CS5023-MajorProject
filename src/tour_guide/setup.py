@@ -1,3 +1,5 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'tour_guide'
@@ -10,6 +12,9 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'maps'),   glob('maps/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,6 +29,9 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'route_planner = tour_guide.route_planner:main',
+            'tour_executor = tour_guide.tour_executor:main',
+            'landmark_publisher = tour_guide.landmark_publisher:main',
         ],
     },
 )
