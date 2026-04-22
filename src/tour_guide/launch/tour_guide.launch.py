@@ -15,7 +15,7 @@ def generate_launch_description():
     # --- Launch args (overridable from the command line) -------------------
     map_arg = DeclareLaunchArgument(
         'map',
-        default_value=os.path.join(pkg_share, 'maps', 'tour_map.yaml'),
+        default_value=os.path.join(pkg_share, 'maps', 'map.yaml'),
         description='Path to the map YAML (map_server format)',
     )
     landmarks_arg = DeclareLaunchArgument(
