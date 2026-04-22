@@ -1,0 +1,15 @@
+build/
+install/
+log/
+
+pycache/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+.vscode/
+.idea/
+.swp
+.DS_Store
+
+#.pgm
