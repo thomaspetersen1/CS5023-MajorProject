@@ -3,13 +3,17 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.launch_description_sources import (
+    AnyLaunchDescriptionSource,
+    PythonLaunchDescriptionSource,
+)
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     pkg_share = get_package_share_directory("tour_guide")
     nav2_share = get_package_share_directory("nav2_bringup")
+    rosbridge_share = get_package_share_directory("rosbridge_server")
 
     nav2_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -26,6 +30,14 @@ def generate_launch_description():
         ),
     )
 
+    rosbridge = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(
+            os.path.join(
+                rosbridge_share, "launch", "rosbridge_websocket_launch.xml"
+            )
+        ),
+    )
+
     tour_executor = Node(
         package="tour_guide",
         executable="tour_executor",
@@ -38,18 +50,4 @@ def generate_launch_description():
         ],
     )
 
-    # route_planner = Node(
-    #     package='tour_guide',
-    #     executable='route_planner',
-    #     name='route_planner',
-    #     output='screen',
-    # )
-
-    # landmark_publisher = Node(
-    #     package='tour_guide',
-    #     executable='landmark_publisher',
-    #     name='landmark_publisher',
-    #     output='screen',
-    # )
-
-    return LaunchDescription([nav2_bringup, rviz, tour_executor])
+    return LaunchDescription([nav2_bringup, rviz, rosbridge, tour_executor])
