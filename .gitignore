@@ -6,6 +6,7 @@ pycache/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.venv/
 
 .vscode/
 .idea/
