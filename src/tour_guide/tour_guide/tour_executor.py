@@ -70,14 +70,14 @@ class TourExecutor(Node):
     # commands and doesn't trip its own safety stop. Negative
     # angular.z is clockwise (right-hand rule), positive is CCW.
     CUE_TIMER_PERIOD = 0.1  # seconds (10 Hz)
-    CUE_PLANNING_WZ = -0.5  # rad/s, clockwise
-    CUE_DWELLING_WZ = 0.5   # rad/s, counter-clockwise
+    CUE_PLANNING_WZ = -1.5  # rad/s, clockwise (~86 deg/s)
+    CUE_DWELLING_WZ = 1.5   # rad/s, counter-clockwise (~86 deg/s)
 
     def __init__(self) -> None:
         super().__init__("tour_executor")
 
         self.declare_parameter("landmarks_file", "")
-        self.declare_parameter("dwell_seconds", 3.0)
+        self.declare_parameter("dwell_seconds", 6.0)
         landmarks_path = (
             self.get_parameter("landmarks_file").get_parameter_value().string_value
         )
