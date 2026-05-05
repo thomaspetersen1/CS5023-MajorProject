@@ -2,7 +2,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import (
     AnyLaunchDescriptionSource,
     PythonLaunchDescriptionSource,
@@ -22,6 +24,7 @@ def generate_launch_description():
         pkg_share, "config", "localization.yaml"
     )
     nav2_params_file = os.path.join(nav_share, "config", "nav2.yaml")
+    start_tour_nodes = LaunchConfiguration("start_tour_nodes")
 
     localization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -80,10 +83,16 @@ def generate_launch_description():
     delayed_tour_nodes = TimerAction(
         period=30.0,
         actions=[landmark_publisher, route_planner, tour_executor],
+        condition=IfCondition(start_tour_nodes),
     )
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "start_tour_nodes",
+                default_value="false",
+                description="Start tour nodes after localization/Nav2 startup.",
+            ),
             localization,
             nav2,
             rviz,
