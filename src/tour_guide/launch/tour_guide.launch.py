@@ -23,7 +23,7 @@ def generate_launch_description():
     localization_params_file = os.path.join(
         pkg_share, "config", "localization.yaml"
     )
-    nav2_params_file = os.path.join(nav_share, "config", "nav2.yaml")
+    nav2_params_file = os.path.join(pkg_share, "config", "nav2.yaml")
     start_tour_nodes = LaunchConfiguration("start_tour_nodes")
 
     localization = IncludeLaunchDescription(
