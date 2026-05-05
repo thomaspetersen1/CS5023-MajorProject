@@ -72,9 +72,9 @@ class TourExecutor(Node):
         )
 
         self.navigator = BasicNavigator()
-        self.get_logger().info("Waiting for Nav2 to become active...")
-        self.navigator.waitUntilNav2Active()
-        self.get_logger().info("Nav2 is active.")
+        self.get_logger().info("Waiting for Nav2 action servers...")
+        self._wait_for_nav2()
+        self.get_logger().info("Nav2 ready.")
 
         # FSM state
         self.state: State = State.IDLE
@@ -103,6 +103,15 @@ class TourExecutor(Node):
 
         self._publish_status("ready")
         self.get_logger().info("Publish to /tour_config or call /start_tour to begin.")
+
+    def _wait_for_nav2(self) -> None:
+        """Block until the NavigateToPose action server is available."""
+        from rclpy.action import ActionClient
+        from nav2_msgs.action import NavigateToPose
+        client = ActionClient(self, NavigateToPose, "navigate_to_pose")
+        while not client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().info("navigate_to_pose action server not yet up, waiting...")
+        client.destroy()
 
     # ----------------------------------------------------------------------
     # Inputs
