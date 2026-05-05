@@ -44,6 +44,13 @@ def generate_launch_description():
         output="screen",
         parameters=[{"landmarks_file": landmarks_file}],
     )
+    route_planner = Node(
+        package="tour_guide",
+        executable="route_planner",
+        name="route_planner",
+        output="screen",
+        parameters=[{"landmarks_file": landmarks_file}],
+    )
     tour_executor = Node(
         package="tour_guide",
         executable="tour_executor",
@@ -52,5 +59,12 @@ def generate_launch_description():
         parameters=[{"landmarks_file": landmarks_file}],
     )
     return LaunchDescription(
-        [nav2_bringup, rviz, rosbridge, landmark_publisher, tour_executor]
+        [
+            nav2_bringup,
+            rviz,
+            rosbridge,
+            landmark_publisher,
+            route_planner,
+            tour_executor,
+        ]
     )
