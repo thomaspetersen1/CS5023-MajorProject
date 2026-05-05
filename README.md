@@ -42,6 +42,16 @@ ros2 service call /start_motor std_srvs/srv/Empty "{}"
 ros2 service call /stop_motor std_srvs/srv/Empty "{}"
 ```
 
+## Build
+
+From the workspace root:
+
+```bash
+colcon build --packages-select tour_guide --symlink-install
+source install/setup.bash
+```
+Source `install/setup.bash` in every new terminal that runs `ros2 ...` against this workspace.
+
 ## Launch
 
 ### Tour Guide (main launch):
@@ -75,6 +85,53 @@ ros2 topic echo /tour_status
 ```
 
 Expected state sequence: `IDLE` → `PLANNING` → `NAVIGATING` → `DWELLING` → repeat → `IDLE` (tour complete)
+
+**Terminal 4 — interactive landmark CLI (request stops mid-tour):**
+
+```bash
+ros2 run tour_guide tour_cli
+```
+
+REPL commands:
+
+- `l` — list available landmarks (numbered)
+- `s` — show current tour status (state, current target, remaining, visited)
+- `a <name|#> ...` — queue landmark(s) for visit; can also type a bare number/name
+- `c` — cancel the active tour
+- `h` — help
+- `q` — quit
+
+When you queue a new landmark, the executor cancels the current goal and re-runs TSP from the robot's live pose, so the closest unvisited landmark (which may be the one you just added) becomes the new target. After each arrival it also re-runs TSP from the just-reached pose.
+
+Override the landmarks file:
+
+```bash
+ros2 run tour_guide tour_cli --ros-args -p landmarks_file:=/abs/path/to/landmarks.yaml
+```
+
+**Override dwell duration (longer / shorter spin on arrival):**
+
+```bash
+ros2 run tour_guide tour_executor --ros-args -p dwell_seconds:=8.0
+```
+
+---
+
+### rosbridge (WebSocket bridge for the web UI):
+
+Install once (apt, not colcon):
+
+```bash
+sudo apt install ros-$ROS_DISTRO-rosbridge-suite
+```
+
+Run alongside the tour stack:
+
+```bash
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+```
+
+Default port: `9090`. The browser must be able to reach this host on that port.
 
 ---
 
