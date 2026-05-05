@@ -18,6 +18,9 @@ def generate_launch_description():
 
     landmarks_file = os.path.join(pkg_share, "config", "landmarks.yaml")
     map_file = os.path.join(pkg_share, "maps", "map1.yaml")
+    localization_params_file = os.path.join(
+        pkg_share, "config", "localization.yaml"
+    )
     nav2_params_file = os.path.join(nav_share, "config", "nav2.yaml")
 
     localization = IncludeLaunchDescription(
@@ -26,8 +29,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             "map": map_file,
-            "params": nav2_params_file,
-            "params_file": nav2_params_file,
+            "params": localization_params_file,
+            "params_file": localization_params_file,
             "use_sim_time": "false",
         }.items(),
     )
