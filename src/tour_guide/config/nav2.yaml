@@ -6,7 +6,13 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
-    wait_for_service_timeout: 1000
+    # 1000 ms is the Nav2 default but races with planner_server / controller_server
+    # discovery during simultaneous bringup on this image (Fast DDS Discovery
+    # Server + RViz + nav2 all coming up together). Symptom when too short:
+    #   [bt_navigator] "compute_path_to_pose" action server not available after
+    #   waiting for 1.00s -> Exception when loading BT -> Deactivating.
+    # 10 s only matters during the activation window; no steady-state cost.
+    wait_for_service_timeout: 10000
     action_server_result_timeout: 900.0
     # Explicit BT XML paths. Nav2 docs say leaving these empty should fall
     # back to the package defaults, but in practice some Jazzy builds (and

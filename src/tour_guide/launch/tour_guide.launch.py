@@ -51,6 +51,13 @@ def generate_launch_description():
         ),
         launch_arguments={"use_sim_time": "false"}.items(),
     )
+    # Stagger nav2 behind localization. Bringing them up simultaneously races
+    # bt_navigator's on_activate against planner_server / controller_server
+    # discovery -- bt_navigator times out waiting for compute_path_to_pose
+    # and self-deactivates. Letting map_server + AMCL settle first removes
+    # most of the discovery storm and gives planner_server a real map to
+    # back its global_costmap before bt_navigator binds to it.
+    delayed_nav2 = TimerAction(period=8.0, actions=[nav2])
     # rosbridge = IncludeLaunchDescription(
     #     AnyLaunchDescriptionSource(
     #         os.path.join(
@@ -93,7 +100,7 @@ def generate_launch_description():
                 description="Start tour nodes after localization/Nav2 startup.",
             ),
             localization,
-            nav2,
+            delayed_nav2,
             rviz,
             delayed_tour_nodes,
         ]
