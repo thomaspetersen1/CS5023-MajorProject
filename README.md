@@ -47,11 +47,20 @@ ros2 service call /stop_motor std_srvs/srv/Empty "{}"
 ### Tour Guide (main launch):
 
 **Terminal 1 — on the robot SSH session, start everything:**
-
 ```bash
+# new SSH session, source ROS + workspace + venv:
+source /opt/ros/jazzy/setup.bash
+source ~/projects/CS5023-MajorProject/install/setup.bash
+source ~/projects/CS5023-MajorProject/.venv/bin/activate
+pip install -r requirements.txt
+
+# (only if you haven't yet since the clean rebuild)
+cd ~/projects/CS5023-MajorProject
+colcon build --packages-select tour_guide --symlink-install --cmake-args -DBUILD_TESTING=OFF
+source install/setup.bash
+
 ros2 launch tour_guide tour_guide.launch.py start_tour_nodes:=true
 ```
-
 Wait ~30 seconds for Nav2 to come up and the tour nodes to start.
 
 **In RViz (opens automatically):**
