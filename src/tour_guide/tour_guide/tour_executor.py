@@ -93,7 +93,12 @@ class TourExecutor(Node):
         )
 
         # FSM state — initialized before any publishing so _publish_status is safe.
+        # All transitions after __init__ MUST go through _set_state, which is
+        # also where the visual-cue rotation is started/stopped. Direct
+        # mutation of self.state desyncs the cue and produces "fighting"
+        # commands at hand-offs to Nav2 (see _set_state docstring).
         self.state: State = State.IDLE
+        self._active_cue_wz: float | None = None
         self.queue: list[str] = []
         self.visited: list[str] = []
         self.current_name: str | None = None
@@ -380,7 +385,7 @@ class TourExecutor(Node):
             self.current_name = None
             self.dwell_started_ns = None
             self.pending_request_id = None
-            self.state = State.IDLE
+            self._set_state(State.IDLE)
             self._publish_status("tour cleared")
             return True, "tour cleared"
 
@@ -405,7 +410,7 @@ class TourExecutor(Node):
         self.dwell_started_ns = None
         self.visited = []
         self.queue = []
-        self.state = State.PLANNING
+        self._set_state(State.PLANNING)
         self._send_plan_request(names, self.current_pose_xy)
         self._publish_status(f"planning tour with {len(names)} landmarks")
         return True, f"planning tour with {len(names)} landmarks"
@@ -429,13 +434,13 @@ class TourExecutor(Node):
             err = payload.get("error", "unknown error")
             self.get_logger().error(f"Planner failed: {err}")
             self._publish_status(f"plan failed: {err}")
-            self.state = State.IDLE
+            self._set_state(State.IDLE)
             return
 
         order = payload.get("order", [])
         if not isinstance(order, list):
             self.get_logger().error("Planner returned non-list 'order'")
-            self.state = State.IDLE
+            self._set_state(State.IDLE)
             return
 
         if self.state == State.PLANNING:
@@ -474,7 +479,7 @@ class TourExecutor(Node):
         """Pop next from queue and start navigating, or go IDLE."""
         if not self.queue:
             self.current_name = None
-            self.state = State.IDLE
+            self._set_state(State.IDLE)
             self._publish_status("tour complete")
             self.get_logger().info("Tour complete.")
             return
@@ -484,7 +489,7 @@ class TourExecutor(Node):
             f'Navigating to "{self.current_name}" '
             f"({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})"
         )
-        self.state = State.NAVIGATING
+        self._set_state(State.NAVIGATING)
         self._publish_status(f"navigating to {self.current_name}")
 
         self._goal_generation += 1
@@ -542,7 +547,7 @@ class TourExecutor(Node):
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info(f'Reached "{self.current_name}"')
             self.visited.append(self.current_name)
-            self.state = State.DWELLING
+            self._set_state(State.DWELLING)
             self.dwell_started_ns = self.get_clock().now().nanoseconds
             self._publish_status(f"reached {self.current_name}; dwelling")
         elif status == GoalStatus.STATUS_CANCELED:
@@ -566,7 +571,7 @@ class TourExecutor(Node):
         self.current_name = None
         self._goal_handle = None
         self._result_future = None
-        self.state = State.DWELLING
+        self._set_state(State.DWELLING)
         self.dwell_started_ns = self.get_clock().now().nanoseconds
         self._publish_status(
             f"{reason}; retrying after {self.dwell_seconds:.0f}s backoff"
@@ -601,35 +606,74 @@ class TourExecutor(Node):
         # event-driven (via _on_nav_result), so there's no polling work here.
         self._publish_status()
 
-    def _cue_tick(self) -> None:
-        """Publish the per-state visual-cue rotation onto /cmd_vel.
+    def _set_state(self, new_state: State) -> None:
+        """Single chokepoint for FSM transitions. ALL post-__init__
+        state writes must go through here.
 
-        - IDLE: silent. Lets the joystick (teleop_twist_joy_node) drive
-          the robot freely between tours -- if we published zeros here
-          we'd actively cancel joystick input.
-        - PLANNING: clockwise spin. "Thinking."
-        - NAVIGATING: silent. Nav2's controller_server owns cmd_vel
-          during a goal; publishing here would race it.
-        - DWELLING: counter-clockwise spin. "I have arrived; look at me."
+        Routing every transition through one method lets the visual-
+        cue rotation be driven by state ENTRY/EXIT instead of by a
+        free-running timer that polls self.state. The previous design
+        kept publishing CCW/CW cmd_vel right up until the moment
+        Nav2's controller_server started publishing its own commands;
+        the create3 base saw the two streams overlap and the robot
+        looked like it was being yanked in opposite directions on
+        every PLANNING->NAVIGATING and DWELLING->NAVIGATING hand-off.
+        Now every cue->non-cue transition emits a single decisive
+        zero cmd_vel, then yields the topic.
 
-        Bypasses velocity_smoother and collision_monitor on purpose --
-        the cue is pure in-place rotation and the global_costmap's
-        inflation_radius already guarantees the robot stopped with
-        enough wall clearance to rotate 0.22m radius safely. Speeds
-        are conservative (0.5 rad/s = 28.6 deg/s).
+        Cue selection per state (see also CUE_*_WZ class constants):
+          IDLE       -> silent (joystick can drive)
+          PLANNING   -> clockwise spin ("thinking")
+          NAVIGATING -> silent (Nav2 owns cmd_vel)
+          DWELLING   -> counter-clockwise spin ("look at me")
         """
-        if self.state == State.IDLE or self.state == State.NAVIGATING:
+        if new_state == self.state:
             return
-        wz = (
-            self.CUE_PLANNING_WZ
-            if self.state == State.PLANNING
-            else self.CUE_DWELLING_WZ
-        )
+
+        prev_cue = self._active_cue_wz
+        self.state = new_state
+
+        if new_state == State.PLANNING:
+            self._active_cue_wz = self.CUE_PLANNING_WZ
+        elif new_state == State.DWELLING:
+            self._active_cue_wz = self.CUE_DWELLING_WZ
+        else:  # IDLE or NAVIGATING -- no cue motion
+            self._active_cue_wz = None
+
+        # Hand-off cleanly: if we were producing a cue and we no longer
+        # are, stop the rotation explicitly before the next owner of
+        # /cmd_vel takes over. Cue->cue transitions (e.g. DWELLING->
+        # PLANNING from a mid-flight tour_config) skip this and just
+        # update the angular velocity, so direction reversals are
+        # picked up on the next _cue_tick.
+        if prev_cue is not None and self._active_cue_wz is None:
+            self._publish_cue_velocity(0.0)
+
+    def _publish_cue_velocity(self, wz: float) -> None:
         msg = TwistStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
         msg.twist.angular.z = wz
         self.cmd_vel_pub.publish(msg)
+
+    def _cue_tick(self) -> None:
+        """Republish the currently active cue rotation at 10 Hz.
+
+        Cue selection happens in _set_state at transition time -- this
+        timer just keeps fresh commands flowing to the create3 base so
+        it doesn't trip its velocity-timeout safety stop. When no cue
+        is active (IDLE / NAVIGATING) this is a no-op, so /cmd_vel is
+        fully owned by the joystick or Nav2 respectively.
+
+        Bypasses velocity_smoother and collision_monitor on purpose:
+        the cue is pure in-place rotation, the global_costmap's
+        inflation already guarantees enough wall clearance for the
+        robot's 0.22m radius to rotate safely, and the speeds are
+        conservative (CUE_*_WZ = 0.5 rad/s = ~28 deg/s).
+        """
+        if self._active_cue_wz is None:
+            return
+        self._publish_cue_velocity(self._active_cue_wz)
 
     # ----------------------------------------------------------------------
     # Pose construction
