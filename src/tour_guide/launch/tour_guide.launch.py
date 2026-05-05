@@ -14,7 +14,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory("tour_guide")
     nav_share = get_package_share_directory("turtlebot4_navigation")
     viz_share = get_package_share_directory("turtlebot4_viz")
-    rosbridge_share = get_package_share_directory("rosbridge_server")
+    # rosbridge_share = get_package_share_directory("rosbridge_server")
 
     landmarks_file = os.path.join(pkg_share, "config", "landmarks.yaml")
     map_file = os.path.join(pkg_share, "maps", "map1.yaml")
@@ -46,13 +46,13 @@ def generate_launch_description():
         ),
         launch_arguments={"use_sim_time": "false"}.items(),
     )
-    rosbridge = IncludeLaunchDescription(
-        AnyLaunchDescriptionSource(
-            os.path.join(
-                rosbridge_share, "launch", "rosbridge_websocket_launch.xml"
-            )
-        ),
-    )
+    # rosbridge = IncludeLaunchDescription(
+    #     AnyLaunchDescriptionSource(
+    #         os.path.join(
+    #             rosbridge_share, "launch", "rosbridge_websocket_launch.xml"
+    #         )
+    #     ),
+    # )
     landmark_publisher = Node(
         package="tour_guide",
         executable="landmark_publisher",
@@ -76,7 +76,7 @@ def generate_launch_description():
     )
     delayed_tour_nodes = TimerAction(
         period=30.0,
-        actions=[rosbridge, landmark_publisher, route_planner, tour_executor],
+        actions=[landmark_publisher, route_planner, tour_executor],
     )
 
     return LaunchDescription(
