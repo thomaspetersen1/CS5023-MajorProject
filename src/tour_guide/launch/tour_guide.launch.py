@@ -2,8 +2,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
-from launch.substitutions import LaunchConfiguration
+from launch.actions import IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import (
     AnyLaunchDescriptionSource,
     PythonLaunchDescriptionSource,
@@ -18,14 +17,8 @@ def generate_launch_description():
     rosbridge_share = get_package_share_directory("rosbridge_server")
 
     landmarks_file = os.path.join(pkg_share, "config", "landmarks.yaml")
-    default_map = os.path.join(pkg_share, "maps", "map1.yaml")
-    localization_params_file = os.path.join(
-        nav_share, "config", "localization.yaml"
-    )
+    map_file = os.path.join(pkg_share, "maps", "map1.yaml")
     nav2_params_file = os.path.join(nav_share, "config", "nav2.yaml")
-
-    map_file = LaunchConfiguration("map")
-    tour_startup_delay = LaunchConfiguration("tour_startup_delay")
 
     localization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -33,7 +26,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             "map": map_file,
-            "params": localization_params_file,
+            "params": nav2_params_file,
+            "params_file": nav2_params_file,
             "use_sim_time": "false",
         }.items(),
     )
@@ -81,22 +75,12 @@ def generate_launch_description():
         parameters=[{"landmarks_file": landmarks_file}],
     )
     delayed_tour_nodes = TimerAction(
-        period=tour_startup_delay,
+        period=30.0,
         actions=[rosbridge, landmark_publisher, route_planner, tour_executor],
     )
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument(
-                "map",
-                default_value=default_map,
-                description="Full path to the map yaml file to load.",
-            ),
-            DeclareLaunchArgument(
-                "tour_startup_delay",
-                default_value="10.0",
-                description="Seconds to wait before starting tour-specific nodes.",
-            ),
             localization,
             nav2,
             rviz,
