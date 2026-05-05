@@ -1,33 +1,8 @@
+frame_id: map
 landmarks:
-  stop_1:
-    x: -1.958
-    y: 2.970
-    yaw: 0.0
-  stop_2:
-    x: -13.306
-    y: 2.087
-    yaw: 0.0
-  stop_3:
-    x: -8.397
-    y: 4.337
-    yaw: 0.0
-  stop_4:
-    x: -4.829
-    y: 10.130
-    yaw: 0.0
-  stop_5:
-    x: -0.962
-    y: 4.215
-    yaw: 0.0
-  stop_6:
-    x: 1.962
-    y: 2.784
-    yaw: 0.0
-  stop_7:
-    x: -3.074
-    y: 1.138
-    yaw: 0.0
-  stop_8:
-    x: -6.994
-    y: 2.391
-    yaw: 0.0
+  computer_door:     {x: -2.002, y: -3.760, yaw: 0.0}
+  whiteboard_pillar: {x: -6.389, y: -4.927, yaw: 0.0}
+  cardboard_corner:  {x: -4.860, y: -5.134, yaw: 0.0}
+  unnamed_stop:      {x: -5.270, y: -6.917, yaw: 0.0}
+  charging_stations: {x: -2.714, y: -7.772, yaw: 0.0}
+  cardboard_room:    {x: -3.930, y: -3.416, yaw: 0.0}
