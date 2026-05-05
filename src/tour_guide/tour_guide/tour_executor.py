@@ -37,6 +37,7 @@ import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ManageLifecycleNodes
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
@@ -115,6 +116,15 @@ class TourExecutor(Node):
             )
         self.get_logger().info("Nav2 ready.")
 
+        # The action server existing doesn't guarantee bt_navigator is ACTIVE.
+        # If a /lifecycle_manager_navigation is present (Nav2 default on
+        # TurtleBot4) and was launched with autostart=false, nothing else is
+        # going to transition the nav stack out of INACTIVE — so we send the
+        # STARTUP command ourselves. Best-effort and non-blocking; the
+        # goal-rejection backoff handles the case where activation is still
+        # in progress when /start_tour is called.
+        self._kick_nav2_lifecycle()
+
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
         self.create_subscription(
             String, "plan_result", self._on_plan_result, latched_qos
@@ -127,6 +137,61 @@ class TourExecutor(Node):
 
         self._publish_status("ready")
         self.get_logger().info("Publish to /tour_config or call /start_tour to begin.")
+
+    # ----------------------------------------------------------------------
+    # Nav2 lifecycle bootstrap
+    # ----------------------------------------------------------------------
+    def _kick_nav2_lifecycle(self) -> None:
+        """Send STARTUP to /lifecycle_manager_navigation if it exists.
+
+        Idempotent and best-effort: if the service isn't there (e.g. user is
+        running a stack without a lifecycle manager, or it's namespaced
+        differently) we just log and continue. If it IS there and already
+        ACTIVE, STARTUP is a no-op on the manager's side.
+        """
+        client = self.create_client(
+            ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes"
+        )
+        if not client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().info(
+                "lifecycle_manager_navigation/manage_nodes not available; "
+                "skipping auto-startup. If goals get rejected as INACTIVE, "
+                "run: ros2 service call /lifecycle_manager_navigation/"
+                "manage_nodes nav2_msgs/srv/ManageLifecycleNodes "
+                "'{command: 0}'  # 0 = STARTUP"
+            )
+            return
+        req = ManageLifecycleNodes.Request()
+        req.command = ManageLifecycleNodes.Request.STARTUP  # = 0
+        future = client.call_async(req)
+        future.add_done_callback(self._on_lifecycle_startup)
+        self.get_logger().info(
+            "Requested /lifecycle_manager_navigation STARTUP "
+            "(transitioning nav stack to ACTIVE)"
+        )
+
+    def _on_lifecycle_startup(self, future) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.get_logger().warn(
+                f"lifecycle_manager_navigation STARTUP call failed: {exc!r}"
+            )
+            return
+        if result is None:
+            self.get_logger().warn(
+                "lifecycle_manager_navigation STARTUP returned no result"
+            )
+            return
+        if result.success:
+            self.get_logger().info(
+                "lifecycle_manager_navigation STARTUP succeeded; nav stack ACTIVE"
+            )
+        else:
+            self.get_logger().warn(
+                "lifecycle_manager_navigation STARTUP returned success=false; "
+                "the nav stack may still be INACTIVE"
+            )
 
     # ----------------------------------------------------------------------
     # Inputs
