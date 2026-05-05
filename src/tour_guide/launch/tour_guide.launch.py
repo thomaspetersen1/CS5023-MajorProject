@@ -47,7 +47,7 @@ def generate_launch_description():
     )
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(viz_share, "launch", "view_robot.launch.py")
+            os.path.join(viz_share, "launch", "view_navigation.launch.py")
         ),
         launch_arguments={"use_sim_time": "false"}.items(),
     )
