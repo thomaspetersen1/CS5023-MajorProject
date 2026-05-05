@@ -56,7 +56,11 @@ class RoutePlanner(Node):
             history=HistoryPolicy.KEEP_LAST,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self.result_pub = self.create_publisher(String, "plan_result", 10)
+        # Both topics are latched: plan_request so a late-starting planner picks
+        # up the executor's request, and plan_result so the executor receives
+        # the reply even if subscription discovery hadn't completed when the
+        # planner published.
+        self.result_pub = self.create_publisher(String, "plan_result", latched_qos)
         self.create_subscription(
             String, "plan_request", self._on_request, latched_qos
         )

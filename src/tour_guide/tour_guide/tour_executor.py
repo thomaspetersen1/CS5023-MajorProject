@@ -98,7 +98,9 @@ class TourExecutor(Node):
         self.get_logger().info("Nav2 ready.")
 
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
-        self.create_subscription(String, "plan_result", self._on_plan_result, 10)
+        self.create_subscription(
+            String, "plan_result", self._on_plan_result, latched_qos
+        )
         self.create_subscription(
             PoseWithCovarianceStamped, "amcl_pose", self._on_amcl_pose, 10
         )
@@ -202,7 +204,12 @@ class TourExecutor(Node):
         except json.JSONDecodeError as e:
             self.get_logger().warn(f"Invalid plan_result JSON: {e}")
             return
-        if payload.get("request_id") != self.pending_request_id:
+        incoming_id = payload.get("request_id")
+        self.get_logger().info(
+            f"plan_result received: request_id={incoming_id} "
+            f"(pending={self.pending_request_id}, success={payload.get('success')})"
+        )
+        if incoming_id != self.pending_request_id:
             return  # stale or unrelated
 
         self.pending_request_id = None
