@@ -34,6 +34,33 @@ ros2 service call /stop_motor std_srvs/srv/Empty "{}"
 
 ## Launch
 
+### Tour Guide (main launch):
+
+**Terminal 1 — on the robot SSH session, start everything:**
+```bash
+ros2 launch tour_guide tour_guide.launch.py start_tour_nodes:=true
+```
+Wait ~30 seconds for Nav2 to come up and the tour nodes to start.
+
+**In RViz (opens automatically):**
+- Confirm the map is visible
+- Click **2D Pose Estimate** and click+drag on the map to set the robot's starting position and orientation — AMCL requires this before navigation works
+
+**Terminal 2 — start the tour (after setting initial pose):**
+```bash
+ros2 service call /start_tour std_srvs/srv/Trigger "{}"
+```
+> Note: the service only exists once tour_executor finishes initializing (~30s after launch).
+> Confirm it's up first: `ros2 service list | grep start_tour`
+
+**Terminal 3 — monitor tour progress:**
+```bash
+ros2 topic echo /tour_status
+```
+Expected state sequence: `IDLE` → `PLANNING` → `NAVIGATING` → `DWELLING` → repeat → `IDLE` (tour complete)
+
+---
+
 ### Map Maker:
 ```bash
 # Terminal 1 — start SLAM + RViz
