@@ -35,7 +35,7 @@ from enum import Enum
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, TwistStamped
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.action import ComputePathToPose, NavigateToPose
@@ -61,7 +61,17 @@ def yaw_to_quat_zw(yaw: float) -> tuple[float, float]:
 
 
 class TourExecutor(Node):
-    TICK_PERIOD = 0.5  # seconds
+    TICK_PERIOD = 0.5  # seconds — FSM heartbeat / dwell timer
+
+    # State-cue motion: a small in-place rotation per FSM state, used
+    # so observers can read the current state from the robot's body
+    # language without subscribing to /tour_status. Published at
+    # CUE_TIMER_PERIOD so the create3 base keeps receiving fresh
+    # commands and doesn't trip its own safety stop. Negative
+    # angular.z is clockwise (right-hand rule), positive is CCW.
+    CUE_TIMER_PERIOD = 0.1  # seconds (10 Hz)
+    CUE_PLANNING_WZ = -0.5  # rad/s, clockwise
+    CUE_DWELLING_WZ = 0.5   # rad/s, counter-clockwise
 
     def __init__(self) -> None:
         super().__init__("tour_executor")
@@ -108,6 +118,15 @@ class TourExecutor(Node):
         )
         self.status_pub = self.create_publisher(String, "tour_status", latched_qos)
         self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
+
+        # State-cue cmd_vel publisher. /cmd_vel already has multiple
+        # publishers in this stack (teleop_twist_joy_node + collision_monitor
+        # from the Nav2 pipeline); the create3 base just takes the latest
+        # message. We only ever publish during PLANNING and DWELLING --
+        # see _cue_tick -- so we don't fight Nav2 (NAVIGATING) or the
+        # joystick (IDLE).
+        self.cmd_vel_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
+
         self._publish_status("waiting for Nav2")
 
         # Order matters here. The navigate_to_pose action server is
@@ -139,6 +158,7 @@ class TourExecutor(Node):
         )
         self.create_service(Trigger, "start_tour", self._start_tour_cb)
         self.create_timer(self.TICK_PERIOD, self._tick)
+        self.create_timer(self.CUE_TIMER_PERIOD, self._cue_tick)
 
         self._publish_status("ready")
         self.get_logger().info("Publish to /tour_config or call /start_tour to begin.")
@@ -580,6 +600,36 @@ class TourExecutor(Node):
         # 2 Hz pulse confirming the FSM is alive. NAVIGATING transitions are
         # event-driven (via _on_nav_result), so there's no polling work here.
         self._publish_status()
+
+    def _cue_tick(self) -> None:
+        """Publish the per-state visual-cue rotation onto /cmd_vel.
+
+        - IDLE: silent. Lets the joystick (teleop_twist_joy_node) drive
+          the robot freely between tours -- if we published zeros here
+          we'd actively cancel joystick input.
+        - PLANNING: clockwise spin. "Thinking."
+        - NAVIGATING: silent. Nav2's controller_server owns cmd_vel
+          during a goal; publishing here would race it.
+        - DWELLING: counter-clockwise spin. "I have arrived; look at me."
+
+        Bypasses velocity_smoother and collision_monitor on purpose --
+        the cue is pure in-place rotation and the global_costmap's
+        inflation_radius already guarantees the robot stopped with
+        enough wall clearance to rotate 0.22m radius safely. Speeds
+        are conservative (0.5 rad/s = 28.6 deg/s).
+        """
+        if self.state == State.IDLE or self.state == State.NAVIGATING:
+            return
+        wz = (
+            self.CUE_PLANNING_WZ
+            if self.state == State.PLANNING
+            else self.CUE_DWELLING_WZ
+        )
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "base_link"
+        msg.twist.angular.z = wz
+        self.cmd_vel_pub.publish(msg)
 
     # ----------------------------------------------------------------------
     # Pose construction
