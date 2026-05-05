@@ -15,17 +15,33 @@ type TourStatus = {
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
-const DEFAULT_ROSBRIDGE_URL = "ws://localhost:9090";
+function resolveRosbridgeUrl(): string {
+  if (process.env.NEXT_PUBLIC_ROSBRIDGE_URL) {
+    return process.env.NEXT_PUBLIC_ROSBRIDGE_URL;
+  }
+  if (typeof window !== "undefined") {
+    return `ws://${window.location.hostname}:9090`;
+  }
+  return "ws://localhost:9090";
+}
 
 export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<TourStatus | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [submittedAt, setSubmittedAt] = useState<number | null>(null);
+  const [rosbridgeUrl, setRosbridgeUrl] = useState<string>("");
   const tourConfigPubRef = useRef<ROSLIB.Topic | null>(null);
 
   useEffect(() => {
-    const url =
-      process.env.NEXT_PUBLIC_ROSBRIDGE_URL ?? DEFAULT_ROSBRIDGE_URL;
+    if (submittedAt === null) return;
+    const t = setTimeout(() => setSubmittedAt(null), 1800);
+    return () => clearTimeout(t);
+  }, [submittedAt]);
+
+  useEffect(() => {
+    const url = resolveRosbridgeUrl();
+    setRosbridgeUrl(url);
     const ros = new ROSLIB.Ros({ url });
 
     ros.on("connection", () => setConnection("connected"));
@@ -72,12 +88,14 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
     tourConfigPubRef.current?.publish({
       data: JSON.stringify({ landmarks: Array.from(selected) }),
     });
+    setSubmittedAt(Date.now());
   };
 
   const clearTour = () => {
     tourConfigPubRef.current?.publish({
       data: JSON.stringify({ landmarks: [] }),
     });
+    setSelected(new Set());
   };
 
   const isRunning =
@@ -100,6 +118,22 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
         <h1 className="text-xl font-semibold tracking-tight">Tour Composer</h1>
         <ConnectionBadge state={connection} />
       </header>
+
+      {connection !== "connected" && rosbridgeUrl && (
+        <section className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+          <div className="font-medium text-amber-700 dark:text-amber-300">
+            {connection === "connecting"
+              ? "Reaching the robot..."
+              : "Can't reach the robot."}
+          </div>
+          <p className="mt-1 text-zinc-600 dark:text-zinc-400">
+            Trying <code className="text-xs">{rosbridgeUrl}</code>. Buttons stay
+            disabled until rosbridge answers. If this hangs, make sure
+            rosbridge_server is running and the device hosting the page is on
+            the same network.
+          </p>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <div className="mb-3 flex items-center justify-between">
@@ -200,6 +234,23 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
             </div>
           </div>
         </section>
+      )}
+
+      {submittedAt !== null && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-24 flex justify-center">
+          <div className="flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white shadow-lg">
+            <svg
+              viewBox="0 0 12 12"
+              className="h-3 w-3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+            >
+              <path d="M2.5 6.5L5 9l4.5-5.5" />
+            </svg>
+            Tour sent
+          </div>
+        </div>
       )}
 
       <div className="fixed inset-x-0 bottom-0 border-t border-zinc-200 bg-white/90 p-4 backdrop-blur dark:border-zinc-800 dark:bg-black/80">
