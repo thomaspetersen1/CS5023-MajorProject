@@ -32,6 +32,7 @@ setup(
             "route_planner = tour_guide.route_planner:main",
             "tour_executor = tour_guide.tour_executor:main",
             "landmark_publisher = tour_guide.landmark_publisher:main",
+            "tour_cli = tour_guide.tour_cli:main",
         ],
     },
 )
