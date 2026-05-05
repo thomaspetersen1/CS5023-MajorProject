@@ -36,7 +36,9 @@ from enum import Enum
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import NavigateToPose
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState, GetState
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav2_msgs.srv import ManageLifecycleNodes
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -108,6 +110,18 @@ class TourExecutor(Node):
         self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
         self._publish_status("waiting for Nav2")
 
+        # Order matters here. The navigate_to_pose action server is
+        # ONLY advertised once bt_navigator reaches ACTIVE — and on this
+        # turtlebot4 image bt_navigator's autostart_node self-activate
+        # races planner_server, fails, and lands in INACTIVE [2]. So
+        # before we wait on navigate_to_pose, we (a) ask the lifecycle
+        # manager to STARTUP (best-effort, free if it already worked),
+        # and (b) directly drive bt_navigator to ACTIVE ourselves once
+        # /compute_path_to_pose is up. Without (b) the wait below loops
+        # forever on this stack.
+        self._kick_nav2_lifecycle()
+        self._force_activate_bt_navigator()
+
         self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.get_logger().info("Waiting for Nav2 action servers...")
         while not self._nav_client.wait_for_server(timeout_sec=2.0):
@@ -115,15 +129,6 @@ class TourExecutor(Node):
                 "navigate_to_pose action server not yet up, waiting..."
             )
         self.get_logger().info("Nav2 ready.")
-
-        # The action server existing doesn't guarantee bt_navigator is ACTIVE.
-        # If a /lifecycle_manager_navigation is present (Nav2 default on
-        # TurtleBot4) and was launched with autostart=false, nothing else is
-        # going to transition the nav stack out of INACTIVE — so we send the
-        # STARTUP command ourselves. Best-effort and non-blocking; the
-        # goal-rejection backoff handles the case where activation is still
-        # in progress when /start_tour is called.
-        self._kick_nav2_lifecycle()
 
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
         self.create_subscription(
@@ -192,6 +197,119 @@ class TourExecutor(Node):
                 "lifecycle_manager_navigation STARTUP returned success=false; "
                 "the nav stack may still be INACTIVE"
             )
+
+    def _force_activate_bt_navigator(self) -> None:
+        """Drive /bt_navigator to ACTIVE explicitly, repairing the
+        autostart-time race against planner_server.
+
+        The other nav2 nodes (planner_server, controller_server, etc.)
+        self-activate cleanly via autostart_node:true because they
+        have no inter-node dependencies at activate-time. bt_navigator
+        is the exception: its on_activate loads the BT XML which
+        binds an action client to /compute_path_to_pose, owned by
+        planner_server. On this turtlebot4 image the two activations
+        run in parallel under autostart_node, bt_navigator loses the
+        race, and self-deactivates back to INACTIVE [2] with
+        "Action server compute_path_to_pose not available". The
+        surrounding lifecycle_manager_navigation does not re-drive
+        configure/activate on this stack, so STARTUP via
+        _kick_nav2_lifecycle alone does NOT recover it.
+
+        Recovery: wait until /compute_path_to_pose is actually up
+        (proves planner_server is fully active), then send the
+        activate transition straight to /bt_navigator/change_state.
+        On this attempt the BT XML's action-client bind succeeds.
+
+        Synchronous on purpose -- runs in __init__ before main()'s
+        rclpy.spin(node), so spin_until_future_complete is safe and
+        doesn't conflict with any outer executor.
+        """
+        plan_check = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
+        self.get_logger().info(
+            "Waiting for /compute_path_to_pose (planner_server) before "
+            "re-activating bt_navigator..."
+        )
+        if not plan_check.wait_for_server(timeout_sec=30.0):
+            self.get_logger().warn(
+                "/compute_path_to_pose not advertised after 30s; "
+                "bt_navigator activation will likely fail again."
+            )
+        else:
+            self.get_logger().info("/compute_path_to_pose is up.")
+        plan_check.destroy()
+
+        get_state_client = self.create_client(GetState, "/bt_navigator/get_state")
+        if not get_state_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                "/bt_navigator/get_state unavailable; cannot force-activate."
+            )
+            return
+        state_future = get_state_client.call_async(GetState.Request())
+        rclpy.spin_until_future_complete(self, state_future, timeout_sec=5.0)
+        state_resp = state_future.result()
+        if state_resp is None:
+            self.get_logger().warn(
+                "bt_navigator get_state returned no result; cannot force-activate."
+            )
+            return
+        state_id = state_resp.current_state.id
+        state_label = state_resp.current_state.label
+        self.get_logger().info(
+            f"bt_navigator current state: {state_label} (id={state_id})"
+        )
+        if state_id == 3:  # PRIMARY_STATE_ACTIVE
+            self.get_logger().info("bt_navigator already ACTIVE; nothing to do.")
+            return
+
+        change_state_client = self.create_client(
+            ChangeState, "/bt_navigator/change_state"
+        )
+        if not change_state_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                "/bt_navigator/change_state unavailable; cannot force-activate."
+            )
+            return
+
+        if state_id == 1:  # PRIMARY_STATE_UNCONFIGURED
+            if not self._send_change_state(
+                change_state_client,
+                Transition.TRANSITION_CONFIGURE,
+                label="configure",
+                timeout_sec=10.0,
+            ):
+                return
+
+        self._send_change_state(
+            change_state_client,
+            Transition.TRANSITION_ACTIVATE,
+            label="activate",
+            timeout_sec=15.0,
+        )
+
+    def _send_change_state(
+        self,
+        client,
+        transition_id: int,
+        label: str,
+        timeout_sec: float,
+    ) -> bool:
+        req = ChangeState.Request()
+        req.transition.id = transition_id
+        future = client.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+        resp = future.result()
+        if resp is None:
+            self.get_logger().error(
+                f"bt_navigator {label} transition timed out after {timeout_sec}s"
+            )
+            return False
+        if not resp.success:
+            self.get_logger().error(
+                f"bt_navigator {label} transition returned success=false"
+            )
+            return False
+        self.get_logger().info(f"bt_navigator {label} transition OK")
+        return True
 
     # ----------------------------------------------------------------------
     # Inputs
