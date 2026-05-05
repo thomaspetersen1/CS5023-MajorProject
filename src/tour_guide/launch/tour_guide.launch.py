@@ -16,7 +16,7 @@ def generate_launch_description():
     pkg_share = get_package_share_directory("tour_guide")
     nav_share = get_package_share_directory("turtlebot4_navigation")
     viz_share = get_package_share_directory("turtlebot4_viz")
-    # rosbridge_share = get_package_share_directory("rosbridge_server")
+    rosbridge_share = get_package_share_directory("rosbridge_server")
 
     landmarks_file = os.path.join(pkg_share, "config", "landmarks.yaml")
     map_file = os.path.join(pkg_share, "maps", "map1.yaml")
@@ -58,13 +58,19 @@ def generate_launch_description():
     # most of the discovery storm and gives planner_server a real map to
     # back its global_costmap before bt_navigator binds to it.
     delayed_nav2 = TimerAction(period=8.0, actions=[nav2])
-    # rosbridge = IncludeLaunchDescription(
-    #     AnyLaunchDescriptionSource(
-    #         os.path.join(
-    #             rosbridge_share, "launch", "rosbridge_websocket_launch.xml"
-    #         )
-    #     ),
-    # )
+    # rosbridge_server: ws bridge on port 9090 (default). The web UI on
+    # the PC connects via roslibjs to ws://<robot-ip>:9090 and speaks
+    # the project's existing JSON-on-std_msgs/String contract --
+    # /tour_config, /tour_status, /landmarks, plus the /start_tour
+    # service. No custom message types involved, so rosbridge needs
+    # no extra config.
+    rosbridge = IncludeLaunchDescription(
+        AnyLaunchDescriptionSource(
+            os.path.join(
+                rosbridge_share, "launch", "rosbridge_websocket_launch.xml"
+            )
+        ),
+    )
     landmark_publisher = Node(
         package="tour_guide",
         executable="landmark_publisher",
@@ -102,6 +108,7 @@ def generate_launch_description():
             localization,
             delayed_nav2,
             rviz,
+            rosbridge,
             delayed_tour_nodes,
         ]
     )
