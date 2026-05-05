@@ -91,7 +91,7 @@ class TourExecutor(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.status_pub = self.create_publisher(String, "tour_status", latched_qos)
-        self.plan_request_pub = self.create_publisher(String, "plan_request", 10)
+        self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
 
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
         self.create_subscription(String, "plan_result", self._on_plan_result, 10)

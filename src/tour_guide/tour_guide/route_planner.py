@@ -27,6 +27,7 @@ import json
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from std_msgs.msg import String
 
 from tour_guide.landmark_manager import load_landmarks
@@ -50,8 +51,15 @@ class RoutePlanner(Node):
             f"{list(self.landmarks.keys())}"
         )
 
+        latched_qos = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self.result_pub = self.create_publisher(String, "plan_result", 10)
-        self.create_subscription(String, "plan_request", self._on_request, 10)
+        self.create_subscription(
+            String, "plan_request", self._on_request, latched_qos
+        )
         self.get_logger().info("route_planner ready.")
 
     def _on_request(self, msg: String) -> None:
