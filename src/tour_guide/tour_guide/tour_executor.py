@@ -71,12 +71,7 @@ class TourExecutor(Node):
             f"Loaded {len(self.landmarks)} landmarks from {landmarks_path}"
         )
 
-        self.navigator = BasicNavigator()
-        self.get_logger().info("Waiting for Nav2 action servers...")
-        self._wait_for_nav2()
-        self.get_logger().info("Nav2 ready.")
-
-        # FSM state
+        # FSM state — initialized before any publishing so _publish_status is safe.
         self.state: State = State.IDLE
         self.queue: list[str] = []
         self.visited: list[str] = []
@@ -84,7 +79,10 @@ class TourExecutor(Node):
         self.current_pose_xy: tuple[float, float] | None = None
         self.dwell_started_ns: int | None = None
         self.pending_request_id: str | None = None
+        self._last_event: str = "init"
 
+        # Publishers come up BEFORE the blocking Nav2 wait so /tour_status is
+        # observable while we're still waiting on Nav2 to be ready.
         latched_qos = QoSProfile(
             depth=1,
             history=HistoryPolicy.KEEP_LAST,
@@ -92,6 +90,12 @@ class TourExecutor(Node):
         )
         self.status_pub = self.create_publisher(String, "tour_status", latched_qos)
         self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
+        self._publish_status("waiting for Nav2")
+
+        self.navigator = BasicNavigator()
+        self.get_logger().info("Waiting for Nav2 action servers...")
+        self._wait_for_nav2()
+        self.get_logger().info("Nav2 ready.")
 
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
         self.create_subscription(String, "plan_result", self._on_plan_result, 10)
@@ -271,45 +275,44 @@ class TourExecutor(Node):
 
     def _tick(self) -> None:
         if self.state == State.NAVIGATING:
-            if not self.navigator.isTaskComplete():
-                return
-            result = self.navigator.getResult()
-            if result == TaskResult.SUCCEEDED:
-                self.get_logger().info(f'Reached "{self.current_name}"')
-                self.visited.append(self.current_name)
-                self.state = State.DWELLING
-                self.dwell_started_ns = self.get_clock().now().nanoseconds
-                self._publish_status(f"reached {self.current_name}; dwelling")
-            elif result == TaskResult.CANCELED:
-                self.get_logger().warn(
-                    f'Goal to "{self.current_name}" was canceled'
-                )
-                self._publish_status(f"canceled at {self.current_name}")
-                self.current_name = None
-                self._dispatch_next()
-            else:
-                self.get_logger().warn(
-                    f'Goal to "{self.current_name}" failed; skipping'
-                )
-                self._publish_status(f"failed at {self.current_name}; skipping")
-                self.current_name = None
-                self._dispatch_next()
+            if self.navigator.isTaskComplete():
+                result = self.navigator.getResult()
+                if result == TaskResult.SUCCEEDED:
+                    self.get_logger().info(f'Reached "{self.current_name}"')
+                    self.visited.append(self.current_name)
+                    self.state = State.DWELLING
+                    self.dwell_started_ns = self.get_clock().now().nanoseconds
+                    self._publish_status(f"reached {self.current_name}; dwelling")
+                elif result == TaskResult.CANCELED:
+                    self.get_logger().warn(
+                        f'Goal to "{self.current_name}" was canceled'
+                    )
+                    self._publish_status(f"canceled at {self.current_name}")
+                    self.current_name = None
+                    self._dispatch_next()
+                else:
+                    self.get_logger().warn(
+                        f'Goal to "{self.current_name}" failed; skipping'
+                    )
+                    self._publish_status(f"failed at {self.current_name}; skipping")
+                    self.current_name = None
+                    self._dispatch_next()
         elif self.state == State.DWELLING:
             assert self.dwell_started_ns is not None
             elapsed = (
                 self.get_clock().now().nanoseconds - self.dwell_started_ns
             ) / 1e9
-            if elapsed < self.dwell_seconds:
-                return
-            if self.pending_request_id is not None:
-                # Dwell is up but we're still waiting on a mid-flight plan.
-                # Hold off on dispatching until the queue is updated.
-                return
-            prev = self.current_name
-            self.current_name = None
-            self.dwell_started_ns = None
-            self._publish_status(f"dwell complete at {prev}")
-            self._dispatch_next()
+            if elapsed >= self.dwell_seconds and self.pending_request_id is None:
+                prev = self.current_name
+                self.current_name = None
+                self.dwell_started_ns = None
+                self._publish_status(f"dwell complete at {prev}")
+                self._dispatch_next()
+
+        # Heartbeat: republish current status every tick so observers (including
+        # default-VOLATILE subscribers like `ros2 topic echo`) always see a
+        # 2 Hz pulse confirming the FSM is alive.
+        self._publish_status()
 
     # ----------------------------------------------------------------------
     # Pose construction
@@ -326,13 +329,15 @@ class TourExecutor(Node):
         pose.pose.orientation.w = w
         return pose
 
-    def _publish_status(self, last_event: str) -> None:
+    def _publish_status(self, last_event: str | None = None) -> None:
+        if last_event is not None:
+            self._last_event = last_event
         payload = {
             "state": self.state.value,
             "current_target": self.current_name,
             "remaining": list(self.queue),
             "visited": list(self.visited),
-            "last_event": last_event,
+            "last_event": self._last_event,
             "timestamp": self.get_clock().now().nanoseconds / 1e9,
         }
         self.status_pub.publish(String(data=json.dumps(payload)))
