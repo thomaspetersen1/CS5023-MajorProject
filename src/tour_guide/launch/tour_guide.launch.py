@@ -19,6 +19,10 @@ def generate_launch_description():
 
     landmarks_file = os.path.join(pkg_share, "config", "landmarks.yaml")
     default_map = os.path.join(pkg_share, "maps", "map1.yaml")
+    localization_params_file = os.path.join(
+        nav_share, "config", "localization.yaml"
+    )
+    nav2_params_file = os.path.join(nav_share, "config", "nav2.yaml")
 
     map_file = LaunchConfiguration("map")
     tour_startup_delay = LaunchConfiguration("tour_startup_delay")
@@ -29,17 +33,24 @@ def generate_launch_description():
         ),
         launch_arguments={
             "map": map_file,
+            "params": localization_params_file,
+            "use_sim_time": "false",
         }.items(),
     )
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(nav_share, "launch", "nav2.launch.py")
         ),
+        launch_arguments={
+            "params_file": nav2_params_file,
+            "use_sim_time": "false",
+        }.items(),
     )
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(viz_share, "launch", "view_robot.launch.py")
         ),
+        launch_arguments={"use_sim_time": "false"}.items(),
     )
     rosbridge = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(
