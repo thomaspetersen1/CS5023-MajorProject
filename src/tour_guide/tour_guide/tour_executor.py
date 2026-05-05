@@ -4,9 +4,15 @@ State machine:
     IDLE -> PLANNING -> NAVIGATING -> DWELLING -> NAVIGATING -> ...
 
 Holds the queue of unvisited stops, sends goals to Nav2 one at a time
-via :class:`BasicNavigator`, and handles dynamic ``add_landmark``
-requests by asking ``route_planner`` for a new order over the
-``plan_request`` / ``plan_result`` topics.
+via the ``navigate_to_pose`` action client (native async pattern), and
+handles dynamic ``add_landmark`` requests by asking ``route_planner``
+for a new order over the ``plan_request`` / ``plan_result`` topics.
+
+We intentionally do NOT use ``nav2_simple_commander.BasicNavigator``
+because its blocking helpers call ``rclpy.spin_until_future_complete``
+on the global executor, which is incompatible with running this node
+under ``rclpy.spin(node)`` — it raises ``Executor is already spinning``
+the moment a goal is sent from a callback.
 
 Inputs:
     * ``tour_config`` (std_msgs/String, JSON): ``{"landmarks": ["a", "b"]}``.
@@ -16,9 +22,9 @@ Inputs:
 Outputs:
     * ``tour_status`` (std_msgs/String, JSON, latched): FSM state, target,
       remaining queue, visited list, last event.
-    * ``plan_request`` (std_msgs/String, JSON): outgoing planning queries.
+    * ``plan_request`` (std_msgs/String, JSON, latched): outgoing planning queries.
 
-Subscribes to ``plan_result`` for replies from the deliberative layer.
+Subscribes to ``plan_result`` (latched) for replies from the deliberative layer.
 """
 from __future__ import annotations
 
@@ -28,8 +34,10 @@ import uuid
 from enum import Enum
 
 import rclpy
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav2_msgs.action import NavigateToPose
+from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from std_msgs.msg import String
@@ -81,8 +89,15 @@ class TourExecutor(Node):
         self.pending_request_id: str | None = None
         self._last_event: str = "init"
 
-        # Publishers come up BEFORE the blocking Nav2 wait so /tour_status is
-        # observable while we're still waiting on Nav2 to be ready.
+        # Active Nav2 action handles. _goal_generation invalidates stale
+        # callbacks: every send/cancel bumps it, and callbacks captured the
+        # generation they were registered for and bail out on mismatch.
+        self._goal_handle = None
+        self._result_future = None
+        self._goal_generation: int = 0
+
+        # Publishers come up BEFORE waiting on the Nav2 action server so
+        # /tour_status is observable during the wait.
         latched_qos = QoSProfile(
             depth=1,
             history=HistoryPolicy.KEEP_LAST,
@@ -92,9 +107,12 @@ class TourExecutor(Node):
         self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
         self._publish_status("waiting for Nav2")
 
-        self.navigator = BasicNavigator()
+        self._nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.get_logger().info("Waiting for Nav2 action servers...")
-        self._wait_for_nav2()
+        while not self._nav_client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().info(
+                "navigate_to_pose action server not yet up, waiting..."
+            )
         self.get_logger().info("Nav2 ready.")
 
         self.create_subscription(String, "tour_config", self._on_tour_config, 10)
@@ -109,15 +127,6 @@ class TourExecutor(Node):
 
         self._publish_status("ready")
         self.get_logger().info("Publish to /tour_config or call /start_tour to begin.")
-
-    def _wait_for_nav2(self) -> None:
-        """Block until the NavigateToPose action server is available."""
-        from rclpy.action import ActionClient
-        from nav2_msgs.action import NavigateToPose
-        client = ActionClient(self, NavigateToPose, "navigate_to_pose")
-        while not client.wait_for_server(timeout_sec=2.0):
-            self.get_logger().info("navigate_to_pose action server not yet up, waiting...")
-        client.destroy()
 
     # ----------------------------------------------------------------------
     # Inputs
@@ -272,39 +281,106 @@ class TourExecutor(Node):
             f'Navigating to "{self.current_name}" '
             f"({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})"
         )
-        self.navigator.goToPose(pose)
         self.state = State.NAVIGATING
         self._publish_status(f"navigating to {self.current_name}")
 
+        self._goal_generation += 1
+        gen = self._goal_generation
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = pose
+        send_goal_future = self._nav_client.send_goal_async(goal_msg)
+        send_goal_future.add_done_callback(
+            lambda fut, g=gen: self._on_goal_response(fut, g)
+        )
+
+    def _on_goal_response(self, future, gen: int) -> None:
+        """Goal accept/reject came back from Nav2."""
+        if gen != self._goal_generation:
+            return  # superseded by a newer dispatch or cancel
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # send_goal_async failed (e.g. action gone)
+            self.get_logger().error(f"send_goal_async failed: {exc!r}")
+            self._handle_goal_unavailable("send_goal_async failed")
+            return
+        if goal_handle is None or not goal_handle.accepted:
+            self.get_logger().warn(
+                f'Goal to "{self.current_name}" was REJECTED by Nav2 '
+                "(bt_navigator likely INACTIVE — set an initial pose in RViz)"
+            )
+            self._handle_goal_unavailable("goal rejected")
+            return
+
+        self._goal_handle = goal_handle
+        self._result_future = goal_handle.get_result_async()
+        self._result_future.add_done_callback(
+            lambda fut, g=gen: self._on_nav_result(fut, g)
+        )
+
+    def _on_nav_result(self, future, gen: int) -> None:
+        """Final navigation result for the dispatched goal."""
+        if gen != self._goal_generation:
+            return  # this was a stale (canceled or replaced) goal
+        try:
+            result = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"get_result_async failed: {exc!r}")
+            self._publish_status(f"nav result error at {self.current_name}; skipping")
+            self.current_name = None
+            self._goal_handle = None
+            self._result_future = None
+            self._dispatch_next()
+            return
+
+        status = result.status
+        self._goal_handle = None
+        self._result_future = None
+
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info(f'Reached "{self.current_name}"')
+            self.visited.append(self.current_name)
+            self.state = State.DWELLING
+            self.dwell_started_ns = self.get_clock().now().nanoseconds
+            self._publish_status(f"reached {self.current_name}; dwelling")
+        elif status == GoalStatus.STATUS_CANCELED:
+            self.get_logger().warn(f'Goal to "{self.current_name}" was canceled')
+            self._publish_status(f"canceled at {self.current_name}")
+            self.current_name = None
+            self._dispatch_next()
+        else:
+            self.get_logger().warn(
+                f'Goal to "{self.current_name}" failed (status={status}); skipping'
+            )
+            self._publish_status(f"failed at {self.current_name}; skipping")
+            self.current_name = None
+            self._dispatch_next()
+
+    def _handle_goal_unavailable(self, reason: str) -> None:
+        """Nav2 server rejected/dropped the goal — requeue current target and
+        back off via the dwell mechanism so we retry once it becomes active."""
+        if self.current_name is not None:
+            self.queue.insert(0, self.current_name)
+        self.current_name = None
+        self._goal_handle = None
+        self._result_future = None
+        self.state = State.DWELLING
+        self.dwell_started_ns = self.get_clock().now().nanoseconds
+        self._publish_status(
+            f"{reason}; retrying after {self.dwell_seconds:.0f}s backoff"
+        )
+
     def _cancel_active_goal(self) -> None:
-        if self.state == State.NAVIGATING:
-            self.navigator.cancelTask()
+        # Bumping the generation invalidates any in-flight goal-response or
+        # result callbacks for the current goal, so they can't drive the FSM
+        # after _set_tour has moved us to a new state.
+        self._goal_generation += 1
+        if self._goal_handle is not None:
+            self._goal_handle.cancel_goal_async()
+        self._goal_handle = None
+        self._result_future = None
 
     def _tick(self) -> None:
-        if self.state == State.NAVIGATING:
-            if self.navigator.isTaskComplete():
-                result = self.navigator.getResult()
-                if result == TaskResult.SUCCEEDED:
-                    self.get_logger().info(f'Reached "{self.current_name}"')
-                    self.visited.append(self.current_name)
-                    self.state = State.DWELLING
-                    self.dwell_started_ns = self.get_clock().now().nanoseconds
-                    self._publish_status(f"reached {self.current_name}; dwelling")
-                elif result == TaskResult.CANCELED:
-                    self.get_logger().warn(
-                        f'Goal to "{self.current_name}" was canceled'
-                    )
-                    self._publish_status(f"canceled at {self.current_name}")
-                    self.current_name = None
-                    self._dispatch_next()
-                else:
-                    self.get_logger().warn(
-                        f'Goal to "{self.current_name}" failed; skipping'
-                    )
-                    self._publish_status(f"failed at {self.current_name}; skipping")
-                    self.current_name = None
-                    self._dispatch_next()
-        elif self.state == State.DWELLING:
+        if self.state == State.DWELLING:
             assert self.dwell_started_ns is not None
             elapsed = (
                 self.get_clock().now().nanoseconds - self.dwell_started_ns
@@ -318,7 +394,8 @@ class TourExecutor(Node):
 
         # Heartbeat: republish current status every tick so observers (including
         # default-VOLATILE subscribers like `ros2 topic echo`) always see a
-        # 2 Hz pulse confirming the FSM is alive.
+        # 2 Hz pulse confirming the FSM is alive. NAVIGATING transitions are
+        # event-driven (via _on_nav_result), so there's no polling work here.
         self._publish_status()
 
     # ----------------------------------------------------------------------
@@ -328,7 +405,7 @@ class TourExecutor(Node):
         lm = self.landmarks[name]
         pose = PoseStamped()
         pose.header.frame_id = "map"
-        pose.header.stamp = self.navigator.get_clock().now().to_msg()
+        pose.header.stamp = self.get_clock().now().to_msg()
         pose.pose.position.x = float(lm["x"])
         pose.pose.position.y = float(lm["y"])
         z, w = yaw_to_quat_zw(float(lm.get("yaw", 0.0)))
