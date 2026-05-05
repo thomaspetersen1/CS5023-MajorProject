@@ -21,7 +21,14 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState<TourStatus | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [submittedAt, setSubmittedAt] = useState<number | null>(null);
   const tourConfigPubRef = useRef<ROSLIB.Topic | null>(null);
+
+  useEffect(() => {
+    if (submittedAt === null) return;
+    const t = setTimeout(() => setSubmittedAt(null), 1800);
+    return () => clearTimeout(t);
+  }, [submittedAt]);
 
   useEffect(() => {
     const url =
@@ -72,12 +79,14 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
     tourConfigPubRef.current?.publish({
       data: JSON.stringify({ landmarks: Array.from(selected) }),
     });
+    setSubmittedAt(Date.now());
   };
 
   const clearTour = () => {
     tourConfigPubRef.current?.publish({
       data: JSON.stringify({ landmarks: [] }),
     });
+    setSelected(new Set());
   };
 
   const isRunning =
@@ -200,6 +209,23 @@ export default function TourComposer({ landmarks }: { landmarks: Landmark[] }) {
             </div>
           </div>
         </section>
+      )}
+
+      {submittedAt !== null && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-24 flex justify-center">
+          <div className="flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white shadow-lg">
+            <svg
+              viewBox="0 0 12 12"
+              className="h-3 w-3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+            >
+              <path d="M2.5 6.5L5 9l4.5-5.5" />
+            </svg>
+            Tour sent
+          </div>
+        </div>
       )}
 
       <div className="fixed inset-x-0 bottom-0 border-t border-zinc-200 bg-white/90 p-4 backdrop-blur dark:border-zinc-800 dark:bg-black/80">
