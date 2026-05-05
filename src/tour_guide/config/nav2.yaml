@@ -84,7 +84,10 @@ controller_server:
       primary_controller: "nav2_mppi_controller::MPPIController"
       angular_dist_threshold: 0.785
       forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 1.8
+      # Tour-guide pacing: 1.8 rad/s in-place rotation looked abrupt /
+      # whippy when the next landmark was behind the robot. 0.8 rad/s
+      # (~46 deg/s) is still clearly visible but graceful.
+      rotate_to_heading_angular_vel: 0.8
       max_angular_accel: 3.2
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
@@ -101,11 +104,16 @@ controller_server:
       az_max: 3.5
       vx_std: 0.2
       vy_std: 0.2
-      wz_std: 0.4
-      vx_max: 0.5
+      # Tour-guide pacing: was wz_std=0.4 / wz_max=1.9 / vx_max=0.5.
+      # That sample variance + max angular range was the dominant
+      # contributor to the visible L/R jitter while tracking a path.
+      # Halving wz_std and capping the angular/forward maxes gives
+      # smoother MPPI commands without changing path feasibility.
+      wz_std: 0.2
+      vx_max: 0.3
       vx_min: -0.35
       vy_max: 0.5
-      wz_max: 1.9
+      wz_max: 1.0
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
@@ -330,8 +338,13 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
     max_velocity: [0.5, 0.0, 2.0]
     min_velocity: [-0.5, 0.0, -2.0]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    # Tour-guide pacing: was [2.5, 0, 3.2] / [-2.5, 0, -3.2]. Those let
+    # the smoother slew the angular velocity from 0 to wz_max in ~0.6s,
+    # producing the visible "yank" feel on every direction change.
+    # 1.0 m/s^2 linear and 1.5 rad/s^2 angular keep the motion fluid
+    # without throttling progress.
+    max_accel: [1.0, 0.0, 1.5]
+    max_decel: [-1.0, 0.0, -1.5]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
