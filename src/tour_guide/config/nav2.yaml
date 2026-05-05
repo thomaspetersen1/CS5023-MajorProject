@@ -48,9 +48,14 @@ controller_server:
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.5
+    min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Was 0.3s -- way too tight. MPPI gets ~6 control cycles to escape an
+    # inflation halo before the BT yanks it into RecoveryFallback (Spin),
+    # which on this stack times out for the same reason MPPI was struggling.
+    # 2.0s lets the controller produce sustained motion on a feasible-but-
+    # tight path without tripping recovery.
+    failure_tolerance: 2.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -168,7 +173,11 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.70
+        # Was 0.70 -- pinned the robot inside its own inflation whenever a
+        # landmark sat within 70cm of a wall (e.g. cardboard_corner), which
+        # made every subsequent goal MPPI's local minimum. 0.40 still gives
+        # an 18cm halo beyond robot_radius (0.22), which is plenty.
+        inflation_radius: 0.40
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
