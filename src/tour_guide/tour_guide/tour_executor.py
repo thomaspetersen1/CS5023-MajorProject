@@ -70,14 +70,14 @@ class TourExecutor(Node):
     # commands and doesn't trip its own safety stop. Negative
     # angular.z is clockwise (right-hand rule), positive is CCW.
     CUE_TIMER_PERIOD = 0.1  # seconds (10 Hz)
-    CUE_PLANNING_WZ = -0.5  # rad/s, clockwise
-    CUE_DWELLING_WZ = 0.5   # rad/s, counter-clockwise
+    CUE_PLANNING_WZ = -1.5  # rad/s, clockwise (~86 deg/s)
+    CUE_DWELLING_WZ = 1.5   # rad/s, counter-clockwise (~86 deg/s)
 
     def __init__(self) -> None:
         super().__init__("tour_executor")
 
         self.declare_parameter("landmarks_file", "")
-        self.declare_parameter("dwell_seconds", 3.0)
+        self.declare_parameter("dwell_seconds", 6.0)
         landmarks_path = (
             self.get_parameter("landmarks_file").get_parameter_value().string_value
         )
@@ -389,26 +389,15 @@ class TourExecutor(Node):
             self._publish_status("tour cleared")
             return True, "tour cleared"
 
-        # Mid-flight: if current target is still wanted, finish it and reorder
-        # the rest from that landmark's position.
-        if self.state == State.NAVIGATING and self.current_name in names:
-            rest = [n for n in names if n != self.current_name]
-            anchor = (
-                self.landmarks[self.current_name]["x"],
-                self.landmarks[self.current_name]["y"],
-            )
-            self.queue = []  # clear stale queue; plan_result will repopulate
-            self._send_plan_request(rest, anchor)
-            self._publish_status(
-                f"replanning rest of tour from {self.current_name}"
-            )
-            return True, "replanning mid-flight"
-
-        # Otherwise, cancel anything in flight and replan from the robot's pose.
+        # Any non-empty update — including mid-flight additions — cancels the
+        # active goal and re-runs TSP from the robot's CURRENT pose. The
+        # nearest unvisited landmark may have changed (a newly queued one
+        # could be closer than the current target), so we don't lock in the
+        # in-flight target. `visited` is preserved so the operator's history
+        # survives a mid-tour add.
         self._cancel_active_goal()
         self.current_name = None
         self.dwell_started_ns = None
-        self.visited = []
         self.queue = []
         self._set_state(State.PLANNING)
         self._send_plan_request(names, self.current_pose_xy)
@@ -598,7 +587,24 @@ class TourExecutor(Node):
                 self.current_name = None
                 self.dwell_started_ns = None
                 self._publish_status(f"dwell complete at {prev}")
-                self._dispatch_next()
+                # Replan from the just-reached pose: re-run TSP over what's
+                # left so the next target is the closest remaining landmark
+                # to where we actually are. Without this, _dispatch_next
+                # would just pop queue[0] from the original plan, which
+                # ignores any mid-tour additions or drift since the last
+                # plan was computed.
+                if self.queue:
+                    remaining = list(self.queue)
+                    self.queue = []
+                    self._set_state(State.PLANNING)
+                    self._send_plan_request(remaining, self.current_pose_xy)
+                    self._publish_status(
+                        f"replanning {len(remaining)} remaining from current pose"
+                    )
+                else:
+                    self._set_state(State.IDLE)
+                    self._publish_status("tour complete")
+                    self.get_logger().info("Tour complete.")
 
         # Heartbeat: republish current status every tick so observers (including
         # default-VOLATILE subscribers like `ros2 topic echo`) always see a
