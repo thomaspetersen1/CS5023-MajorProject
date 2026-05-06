@@ -94,7 +94,17 @@ class RoutePlanner(Node):
             (n, self.landmarks[n]["x"], self.landmarks[n]["y"]) for n in names
         ]
         order = nearest_neighbor_order(start, points)
-        self.get_logger().info(f"Planned: {order}")
+        if start is not None:
+            sx, sy = start
+            dists = ", ".join(
+                f"{n}={((x - sx) ** 2 + (y - sy) ** 2) ** 0.5:.2f}m"
+                for n, x, y in points
+            )
+            self.get_logger().info(
+                f"Planned from start=({sx:.2f}, {sy:.2f}): {order} [{dists}]"
+            )
+        else:
+            self.get_logger().info(f"Planned (no start pose): {order}")
         self._reply(request_id, order, True, None)
 
     def _reply(

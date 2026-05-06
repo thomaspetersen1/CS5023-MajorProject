@@ -389,20 +389,29 @@ class TourExecutor(Node):
             self._publish_status("tour cleared")
             return True, "tour cleared"
 
-        # Any non-empty update — including mid-flight additions — cancels the
-        # active goal and re-runs TSP from the robot's CURRENT pose. The
-        # nearest unvisited landmark may have changed (a newly queued one
-        # could be closer than the current target), so we don't lock in the
-        # in-flight target. `visited` is preserved so the operator's history
-        # survives a mid-tour add.
-        self._cancel_active_goal()
-        self.current_name = None
-        self.dwell_started_ns = None
+        # Mid-flight add: do NOT cancel the active goal yet. Let the robot
+        # keep moving toward current_name while we ask the planner to
+        # re-run TSP over the full set (including current_name) from the
+        # live pose. When the result lands, _on_plan_result decides:
+        #   * if order[0] == current_name → keep going, queue := order[1:]
+        #   * otherwise → cancel current goal, dispatch order[0] instead,
+        #     and the previously-current target stays in the queue.
+        # IDLE: no goal to preserve, just plan and dispatch.
+        if self.current_name is None:
+            self.queue = []
+            self._set_state(State.PLANNING)
+            self._send_plan_request(names, self.current_pose_xy)
+            self._publish_status(f"planning tour with {len(names)} landmarks")
+            return True, f"planning tour with {len(names)} landmarks"
+
+        # Active goal in flight (NAVIGATING or DWELLING). Keep current_name,
+        # clear queue, send a plan over all names — _on_plan_result will
+        # reconcile current_name vs the planner's first pick.
         self.queue = []
-        self._set_state(State.PLANNING)
         self._send_plan_request(names, self.current_pose_xy)
-        self._publish_status(f"planning tour with {len(names)} landmarks")
-        return True, f"planning tour with {len(names)} landmarks"
+        msg = f"replanning {len(names)} landmarks; {self.current_name} still in flight"
+        self._publish_status(msg)
+        return True, msg
 
     def _on_plan_result(self, msg: String) -> None:
         try:
@@ -437,13 +446,35 @@ class TourExecutor(Node):
             self._publish_status(f"tour planned: {order}")
             self._dispatch_next()
         elif self.state == State.NAVIGATING:
-            # Mid-flight reorder: queue is the rest after current_name.
-            self.queue = list(order)
-            self._publish_status(
-                f"queue updated mid-flight; finishing {self.current_name}"
-            )
+            # current_name is in flight. order[0] is the planner's pick for
+            # closest-from-live-pose (current_name was included in the request).
+            # If it agrees, keep the active goal and queue the rest. If it
+            # disagrees, the planner found something closer than current_name —
+            # cancel the active goal, dispatch the new pick, and let the
+            # previously-in-flight target stay in the queue.
+            if order and order[0] == self.current_name:
+                self.queue = list(order[1:])
+                self._publish_status(
+                    f"queue updated mid-flight; finishing {self.current_name}"
+                )
+            else:
+                prev = self.current_name
+                self._cancel_active_goal()
+                self.current_name = None
+                self.queue = list(order)
+                self._publish_status(
+                    f"diverting from {prev} to {order[0]} (closer)"
+                )
+                self._set_state(State.PLANNING)
+                self._dispatch_next()
         elif self.state == State.DWELLING:
-            self.queue = list(order)
+            # Robot already at a stop — current_name still set until dwell
+            # completes. Just stage the new queue; _tick will replan again
+            # from the dwell pose when the dwell timer fires.
+            if order and order[0] == self.current_name:
+                self.queue = list(order[1:])
+            else:
+                self.queue = list(order)
             self._publish_status(f"queue updated during dwell: {order}")
         # IDLE → ignore (we got canceled while plan was in flight)
 
