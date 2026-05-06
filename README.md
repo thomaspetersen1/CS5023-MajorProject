@@ -231,3 +231,20 @@ At time 1777943714.595354116
   1.000 0.025 0.003 -3.416
   -0.003 0.002 1.000 -0.000
   0.000 0.000 0.000 1.000
+
+## Testing
+
+The TSP heuristic in `tour_guide/tsp.py` has unit tests that don't need ROS or the robot. Run them from the workspace root:
+
+```bash
+python -m pytest src/tour_guide/test/test_tsp.py -v
+```
+
+The tests load `src/tour_guide/config/landmarks.yaml` and check `nearest_neighbor_order` against three starting poses: `None` (no AMCL pose yet), `(0, 0)` (map origin), and `(-3, -8)` (near the charging stations). If you edit `landmarks.yaml`, the expected orders in `test_tsp.py` need to be recomputed.
+
+If you also want the lab's `flake8` / `pep257` / copyright checks, run them through colcon:
+
+```bash
+colcon test --packages-select tour_guide
+colcon test-result --verbose
+```
