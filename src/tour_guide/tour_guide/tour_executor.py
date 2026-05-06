@@ -438,15 +438,30 @@ class TourExecutor(Node):
             self._dispatch_next()
         elif self.state == State.NAVIGATING:
             # Mid-flight reorder: queue is the rest after current_name.
-            self.queue = list(order)
-            self._publish_status(
-                f"queue updated mid-flight; finishing {self.current_name}"
-            )
-        elif self.state == State.DWELLING:
-            self.queue = list(order)
-            self._publish_status(f"queue updated during dwell: {order}")
-        # IDLE → ignore (we got canceled while plan was in flight)
+            if order and order[0] == self.current_name:
+                self.queue = list(order[1:])
+                self._publish_status(
+                    f"queue updated mid-flight; finishing {self.current_name}"
+                )
+            else:
+                prev = self.current_name
+                self._cancel_active_goal()
+                self.current_name = None
+                self.queue = list(order)
+                self._publish_status(
+                    f"diverting from {prev} to {order[0]} (closer)"
+                )
+                self._set_state(State.PLANNING)
+                self._dispatch_next()
 
+
+        elif self.state == State.DWELLING:
+            if order and order[0] == self.current_name:
+                self.queue = list(order[1:])
+            else:
+                self.queue = list(order)
+
+        self._publish_status(f"queue updated during dwell: {order}")
     # ----------------------------------------------------------------------
     # FSM helpers
     # ----------------------------------------------------------------------
