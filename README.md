@@ -119,19 +119,48 @@ ros2 run tour_guide tour_executor --ros-args -p dwell_seconds:=8.0
 
 ### rosbridge (WebSocket bridge for the web UI):
 
-Install once (apt, not colcon):
+The lab machines don't allow apt-installing `ros-jazzy-rosbridge-suite`, so we build it from source inside the workspace. Once-per-clone setup:
 
 ```bash
-sudo apt install ros-$ROS_DISTRO-rosbridge-suite
+# 1. Clone rosbridge_suite at a Jazzy-compatible tag into src/
+git clone -b 3.2.0 https://github.com/RobotWebTools/rosbridge_suite.git src/rosbridge_suite
+
+# 2. Make a venv that still sees system rclpy
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+
+# 3. Install the runtime pip deps. pymongo provides the BSON
+#    implementation rosbridge_library actually needs (the standalone
+#    `bson` PyPI package is broken for rosbridge, see issue #198).
+pip install -r requirements.txt
+
+# 4. Build the workspace. BUILD_TESTING=OFF skips a missing
+#    ament_cmake_mypy dep that's used only for tests.
+colcon build --cmake-args -DBUILD_TESTING=OFF
+source install/setup.bash
 ```
 
-Run alongside the tour stack:
+Every new terminal that runs `ros2 ...` against this workspace needs the same three sources:
 
 ```bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+source /opt/ros/jazzy/setup.bash
+source .venv/bin/activate
+source install/setup.bash
 ```
 
-Default port: `9090`. The browser must be able to reach this host on that port.
+rosbridge_server now comes up automatically as part of `tour_guide.launch.py` on port 9090.
+
+### Webapp (browser-side UI on the lab PC):
+
+The webapp ships as a prebuilt static export in `web/static-bundle.tar.gz`. No Node toolchain needed.
+
+```bash
+mkdir -p ~/tour-webapp
+tar -xzf web/static-bundle.tar.gz -C ~/tour-webapp
+cd ~/tour-webapp && python3 -m http.server 3000
+```
+
+Open `http://localhost:3000` in firefox/chrome on the lab PC with rosbridge running. You should see a green "Connected" badge and all 6 named landmarks listed.
 
 ---
 
