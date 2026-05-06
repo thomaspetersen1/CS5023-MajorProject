@@ -389,20 +389,26 @@ class TourExecutor(Node):
             self._publish_status("tour cleared")
             return True, "tour cleared"
 
-        # Any non-empty update — including mid-flight additions — cancels the
-        # active goal and re-runs TSP from the robot's CURRENT pose. The
-        # nearest unvisited landmark may have changed (a newly queued one
-        # could be closer than the current target), so we don't lock in the
-        # in-flight target. `visited` is preserved so the operator's history
-        # survives a mid-tour add.
-        self._cancel_active_goal()
-        self.current_name = None
-        self.dwell_started_ns = None
+        # Mid-flight add: do NOT cancel the active goal yet. Let the robot
+        # keep moving toward current_name while we ask the planner to
+        # re-run TSP over the full set (including current_name) from the
+        # live pose. _on_plan_result then reconciles:
+        #   * order[0] == current_name → keep going, queue := order[1:]
+        #   * else → cancel, dispatch order[0]; previously-current target
+        #     stays in the new queue and gets visited later.
+        # IDLE / no in-flight goal: plan and dispatch normally.
+        if self.current_name is None:
+            self.queue = []
+            self._set_state(State.PLANNING)
+            self._send_plan_request(names, self.current_pose_xy)
+            self._publish_status(f"planning tour with {len(names)} landmarks")
+            return True, f"planning tour with {len(names)} landmarks"
+
         self.queue = []
-        self._set_state(State.PLANNING)
         self._send_plan_request(names, self.current_pose_xy)
-        self._publish_status(f"planning tour with {len(names)} landmarks")
-        return True, f"planning tour with {len(names)} landmarks"
+        msg = f"replanning {len(names)} landmarks; {self.current_name} still in flight"
+        self._publish_status(msg)
+        return True, msg
 
     def _on_plan_result(self, msg: String) -> None:
         try:
@@ -456,12 +462,16 @@ class TourExecutor(Node):
 
 
         elif self.state == State.DWELLING:
+            # Robot already at a stop — current_name is still set until
+            # dwell completes. Stage the new queue; _tick replans again
+            # from the dwell pose when the dwell timer fires.
             if order and order[0] == self.current_name:
                 self.queue = list(order[1:])
             else:
                 self.queue = list(order)
+            self._publish_status(f"queue updated during dwell: {order}")
+        # IDLE → ignore (we got canceled while plan was in flight)
 
-        self._publish_status(f"queue updated during dwell: {order}")
     # ----------------------------------------------------------------------
     # FSM helpers
     # ----------------------------------------------------------------------
