@@ -51,19 +51,9 @@ def generate_launch_description():
         ),
         launch_arguments={"use_sim_time": "false"}.items(),
     )
-    # Stagger nav2 behind localization. Bringing them up simultaneously races
-    # bt_navigator's on_activate against planner_server / controller_server
-    # discovery -- bt_navigator times out waiting for compute_path_to_pose
-    # and self-deactivates. Letting map_server + AMCL settle first removes
-    # most of the discovery storm and gives planner_server a real map to
-    # back its global_costmap before bt_navigator binds to it.
+    
     delayed_nav2 = TimerAction(period=8.0, actions=[nav2])
-    # rosbridge_server: ws bridge on port 9090 (default). The web UI on
-    # the PC connects via roslibjs to ws://<robot-ip>:9090 and speaks
-    # the project's existing JSON-on-std_msgs/String contract --
-    # /tour_config, /tour_status, /landmarks, plus the /start_tour
-    # service. No custom message types involved, so rosbridge needs
-    # no extra config.
+    
     rosbridge = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(
             os.path.join(
