@@ -1,5 +1,8 @@
 # CS5023-FinalProject
 
+[![Major Project Demo](https://img.youtube.com/vi/xta0YFV4XPM/0.jpg)](https://www.youtube.com/watch?v=xta0YFV4XPM)
+
+
 ## Setup:
 
 ### ssh into robot:
