@@ -1,10 +1,10 @@
-"""Route planner — deliberative layer.
+"""Route planner. The deliberative side of the architecture.
 
-Consumes ``plan_request`` and replies on ``plan_result``. Both topics
-carry ``std_msgs/String`` with JSON payloads, matching the constraint
-that the project uses only standard message types.
+Takes requests on plan_request and replies on plan_result. Both topics
+are std_msgs/String carrying JSON, so we stay within the project's
+"only standard message types" constraint.
 
-Request schema::
+Request:
 
     {
       "request_id": "<uuid or counter>",
@@ -12,7 +12,7 @@ Request schema::
       "landmarks": ["a", "b", "c"]
     }
 
-Reply schema::
+Reply:
 
     {
       "request_id": "<echoes request>",
@@ -56,9 +56,10 @@ class RoutePlanner(Node):
             history=HistoryPolicy.KEEP_LAST,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        # Both topics are latched: plan_request so a late-starting planner picks
-        # up the executor's request, and plan_result so the executor receives
-        # the reply even if subscription discovery hadn't completed when the
+        # Both topics latched. plan_request stays around so a planner
+        # that starts up late can still pick up the executor's request,
+        # and plan_result stays around so the executor still gets the
+        # reply even if subscription discovery hadn't finished when the
         # planner published.
         self.result_pub = self.create_publisher(String, "plan_result", latched_qos)
         self.create_subscription(

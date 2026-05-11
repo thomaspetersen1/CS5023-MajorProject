@@ -1,30 +1,13 @@
-"""Tour executor — sequencer / FSM layer.
+"""FSM that runs the tour.
 
-State machine:
-    IDLE -> PLANNING -> NAVIGATING -> DWELLING -> NAVIGATING -> ...
+States cycle IDLE -> PLANNING -> NAVIGATING -> DWELLING -> NAVIGATING.
+Goals go out to Nav2 one at a time via navigate_to_pose, and the visit
+order comes from route_planner over plan_request / plan_result.
 
-Holds the queue of unvisited stops, sends goals to Nav2 one at a time
-via the ``navigate_to_pose`` action client (native async pattern), and
-handles dynamic ``add_landmark`` requests by asking ``route_planner``
-for a new order over the ``plan_request`` / ``plan_result`` topics.
-
-We intentionally do NOT use ``nav2_simple_commander.BasicNavigator``
-because its blocking helpers call ``rclpy.spin_until_future_complete``
-on the global executor, which is incompatible with running this node
-under ``rclpy.spin(node)`` — it raises ``Executor is already spinning``
-the moment a goal is sent from a callback.
-
-Inputs:
-    * ``tour_config`` (std_msgs/String, JSON): ``{"landmarks": ["a", "b"]}``.
-      Empty list cancels the tour.
-    * ``start_tour`` (std_srvs/Trigger): plans over all loaded landmarks.
-
-Outputs:
-    * ``tour_status`` (std_msgs/String, JSON, latched): FSM state, target,
-      remaining queue, visited list, last event.
-    * ``plan_request`` (std_msgs/String, JSON, latched): outgoing planning queries.
-
-Subscribes to ``plan_result`` (latched) for replies from the deliberative layer.
+We don't use nav2_simple_commander.BasicNavigator because its blocking
+helpers call rclpy.spin_until_future_complete on the global executor,
+which crashes with "Executor is already spinning" the moment we send a
+goal from inside a callback under rclpy.spin(node).
 """
 from __future__ import annotations
 
@@ -61,17 +44,14 @@ def yaw_to_quat_zw(yaw: float) -> tuple[float, float]:
 
 
 class TourExecutor(Node):
-    TICK_PERIOD = 0.5  # seconds — FSM heartbeat / dwell timer
+    TICK_PERIOD = 0.5
 
-    # State-cue motion: a small in-place rotation per FSM state, used
-    # so observers can read the current state from the robot's body
-    # language without subscribing to /tour_status. Published at
-    # CUE_TIMER_PERIOD so the create3 base keeps receiving fresh
-    # commands and doesn't trip its own safety stop. Negative
-    # angular.z is clockwise (right-hand rule), positive is CCW.
-    CUE_TIMER_PERIOD = 0.1  # seconds (10 Hz)
-    CUE_PLANNING_WZ = -1.5  # rad/s, clockwise (~86 deg/s)
-    CUE_DWELLING_WZ = 1.5   # rad/s, counter-clockwise (~86 deg/s)
+    # We spin in place during PLANNING and DWELLING so you can read the
+    # state off the robot's body. The cue gets republished at 10 Hz or
+    # the create3's velocity timeout kicks in and stops the motion.
+    CUE_TIMER_PERIOD = 0.1
+    CUE_PLANNING_WZ = -1.5  # clockwise
+    CUE_DWELLING_WZ = 1.5   # counter-clockwise
 
     def __init__(self) -> None:
         super().__init__("tour_executor")
@@ -92,11 +72,7 @@ class TourExecutor(Node):
             f"Loaded {len(self.landmarks)} landmarks from {landmarks_path}"
         )
 
-        # FSM state — initialized before any publishing so _publish_status is safe.
-        # All transitions after __init__ MUST go through _set_state, which is
-        # also where the visual-cue rotation is started/stopped. Direct
-        # mutation of self.state desyncs the cue and produces "fighting"
-        # commands at hand-offs to Nav2 (see _set_state docstring).
+        # All post-__init__ transitions go through _set_state.
         self.state: State = State.IDLE
         self._active_cue_wz: float | None = None
         self.queue: list[str] = []
@@ -107,15 +83,16 @@ class TourExecutor(Node):
         self.pending_request_id: str | None = None
         self._last_event: str = "init"
 
-        # Active Nav2 action handles. _goal_generation invalidates stale
-        # callbacks: every send/cancel bumps it, and callbacks captured the
-        # generation they were registered for and bail out on mismatch.
+        # Every send or cancel bumps _goal_generation. Each callback
+        # closes over the generation it was registered for and bails on
+        # mismatch, so a stale result from a canceled goal can't drive
+        # the FSM after we've already moved on.
         self._goal_handle = None
         self._result_future = None
         self._goal_generation: int = 0
 
-        # Publishers come up BEFORE waiting on the Nav2 action server so
-        # /tour_status is observable during the wait.
+        # Bring publishers up before we wait on the Nav2 action server
+        # so /tour_status is observable during the wait.
         latched_qos = QoSProfile(
             depth=1,
             history=HistoryPolicy.KEEP_LAST,
@@ -124,25 +101,19 @@ class TourExecutor(Node):
         self.status_pub = self.create_publisher(String, "tour_status", latched_qos)
         self.plan_request_pub = self.create_publisher(String, "plan_request", latched_qos)
 
-        # State-cue cmd_vel publisher. /cmd_vel already has multiple
-        # publishers in this stack (teleop_twist_joy_node + collision_monitor
-        # from the Nav2 pipeline); the create3 base just takes the latest
-        # message. We only ever publish during PLANNING and DWELLING --
-        # see _cue_tick -- so we don't fight Nav2 (NAVIGATING) or the
-        # joystick (IDLE).
+        # teleop and collision_monitor also publish to /cmd_vel, and the
+        # create3 just takes whichever message arrived most recently. So
+        # we only push to it during PLANNING and DWELLING, which keeps
+        # us out of Nav2's way and the joystick's way.
         self.cmd_vel_pub = self.create_publisher(TwistStamped, "/cmd_vel", 10)
 
         self._publish_status("waiting for Nav2")
 
-        # Order matters here. The navigate_to_pose action server is
-        # ONLY advertised once bt_navigator reaches ACTIVE — and on this
-        # turtlebot4 image bt_navigator's autostart_node self-activate
-        # races planner_server, fails, and lands in INACTIVE [2]. So
-        # before we wait on navigate_to_pose, we (a) ask the lifecycle
-        # manager to STARTUP (best-effort, free if it already worked),
-        # and (b) directly drive bt_navigator to ACTIVE ourselves once
-        # /compute_path_to_pose is up. Without (b) the wait below loops
-        # forever on this stack.
+        # On this turtlebot4 image bt_navigator's autostart races
+        # planner_server and ends up stuck in INACTIVE, so the
+        # navigate_to_pose action server never comes up on its own.
+        # We kick the lifecycle manager first, then force bt_navigator
+        # to ACTIVE ourselves before waiting on the action.
         self._kick_nav2_lifecycle()
         self._force_activate_bt_navigator()
 
@@ -168,17 +139,9 @@ class TourExecutor(Node):
         self._publish_status("ready")
         self.get_logger().info("Publish to /tour_config or call /start_tour to begin.")
 
-    # ----------------------------------------------------------------------
-    # Nav2 lifecycle bootstrap
-    # ----------------------------------------------------------------------
     def _kick_nav2_lifecycle(self) -> None:
-        """Send STARTUP to /lifecycle_manager_navigation if it exists.
-
-        Idempotent and best-effort: if the service isn't there (e.g. user is
-        running a stack without a lifecycle manager, or it's namespaced
-        differently) we just log and continue. If it IS there and already
-        ACTIVE, STARTUP is a no-op on the manager's side.
-        """
+        """Ask /lifecycle_manager_navigation to STARTUP. No-op when the
+        service isn't running or the stack is already ACTIVE anyway."""
         client = self.create_client(
             ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes"
         )
@@ -224,30 +187,17 @@ class TourExecutor(Node):
             )
 
     def _force_activate_bt_navigator(self) -> None:
-        """Drive /bt_navigator to ACTIVE explicitly, repairing the
-        autostart-time race against planner_server.
+        """Force bt_navigator to ACTIVE so the autostart race against
+        planner_server doesn't leave it stuck.
 
-        The other nav2 nodes (planner_server, controller_server, etc.)
-        self-activate cleanly via autostart_node:true because they
-        have no inter-node dependencies at activate-time. bt_navigator
-        is the exception: its on_activate loads the BT XML which
-        binds an action client to /compute_path_to_pose, owned by
-        planner_server. On this turtlebot4 image the two activations
-        run in parallel under autostart_node, bt_navigator loses the
-        race, and self-deactivates back to INACTIVE [2] with
-        "Action server compute_path_to_pose not available". The
-        surrounding lifecycle_manager_navigation does not re-drive
-        configure/activate on this stack, so STARTUP via
-        _kick_nav2_lifecycle alone does NOT recover it.
-
-        Recovery: wait until /compute_path_to_pose is actually up
-        (proves planner_server is fully active), then send the
+        When bt_navigator activates it loads a BT XML, and that XML
+        wants an action client on /compute_path_to_pose. But
+        planner_server owns that action and isn't necessarily up yet,
+        so under autostart bt_navigator loses the race and
+        self-deactivates with "Action server compute_path_to_pose not
+        available". The lifecycle manager won't retry on its own. So
+        we wait for /compute_path_to_pose to come up and then send the
         activate transition straight to /bt_navigator/change_state.
-        On this attempt the BT XML's action-client bind succeeds.
-
-        Synchronous on purpose -- runs in __init__ before main()'s
-        rclpy.spin(node), so spin_until_future_complete is safe and
-        doesn't conflict with any outer executor.
         """
         plan_check = ActionClient(self, ComputePathToPose, "compute_path_to_pose")
         self.get_logger().info(
@@ -336,9 +286,6 @@ class TourExecutor(Node):
         self.get_logger().info(f"bt_navigator {label} transition OK")
         return True
 
-    # ----------------------------------------------------------------------
-    # Inputs
-    # ----------------------------------------------------------------------
     def _on_amcl_pose(self, msg: PoseWithCovarianceStamped) -> None:
         self.current_pose_xy = (
             msg.pose.pose.position.x,
@@ -389,12 +336,10 @@ class TourExecutor(Node):
             self._publish_status("tour cleared")
             return True, "tour cleared"
 
-        # Any non-empty update — including mid-flight additions — cancels the
-        # active goal and re-runs TSP from the robot's CURRENT pose. The
-        # nearest unvisited landmark may have changed (a newly queued one
-        # could be closer than the current target), so we don't lock in the
-        # in-flight target. `visited` is preserved so the operator's history
-        # survives a mid-tour add.
+        # If someone adds landmarks mid-tour, one of the new ones might
+        # actually be closer than the target we're driving to, so we
+        # cancel the active goal and re-run TSP from the current pose.
+        # visited stays as it was.
         self._cancel_active_goal()
         self.current_name = None
         self.dwell_started_ns = None
@@ -437,7 +382,7 @@ class TourExecutor(Node):
             self._publish_status(f"tour planned: {order}")
             self._dispatch_next()
         elif self.state == State.NAVIGATING:
-            # Mid-flight reorder: queue is the rest after current_name.
+            # mid-flight reorder, so this is just the remainder of the tour
             self.queue = list(order)
             self._publish_status(
                 f"queue updated mid-flight; finishing {self.current_name}"
@@ -447,9 +392,6 @@ class TourExecutor(Node):
             self._publish_status(f"queue updated during dwell: {order}")
         # IDLE → ignore (we got canceled while plan was in flight)
 
-    # ----------------------------------------------------------------------
-    # FSM helpers
-    # ----------------------------------------------------------------------
     def _send_plan_request(
         self,
         names: list[str],
@@ -465,7 +407,6 @@ class TourExecutor(Node):
         self.plan_request_pub.publish(String(data=json.dumps(payload)))
 
     def _dispatch_next(self) -> None:
-        """Pop next from queue and start navigating, or go IDLE."""
         if not self.queue:
             self.current_name = None
             self._set_state(State.IDLE)
@@ -491,19 +432,18 @@ class TourExecutor(Node):
         )
 
     def _on_goal_response(self, future, gen: int) -> None:
-        """Goal accept/reject came back from Nav2."""
         if gen != self._goal_generation:
             return  # superseded by a newer dispatch or cancel
         try:
             goal_handle = future.result()
-        except Exception as exc:  # send_goal_async failed (e.g. action gone)
+        except Exception as exc:  # send_goal_async failed, action probably gone
             self.get_logger().error(f"send_goal_async failed: {exc!r}")
             self._handle_goal_unavailable("send_goal_async failed")
             return
         if goal_handle is None or not goal_handle.accepted:
             self.get_logger().warn(
                 f'Goal to "{self.current_name}" was REJECTED by Nav2 '
-                "(bt_navigator likely INACTIVE — set an initial pose in RViz)"
+                "(bt_navigator probably isn't ACTIVE, try setting an initial pose in RViz)"
             )
             self._handle_goal_unavailable("goal rejected")
             return
@@ -515,7 +455,6 @@ class TourExecutor(Node):
         )
 
     def _on_nav_result(self, future, gen: int) -> None:
-        """Final navigation result for the dispatched goal."""
         if gen != self._goal_generation:
             return  # this was a stale (canceled or replaced) goal
         try:
@@ -553,8 +492,8 @@ class TourExecutor(Node):
             self._dispatch_next()
 
     def _handle_goal_unavailable(self, reason: str) -> None:
-        """Nav2 server rejected/dropped the goal — requeue current target and
-        back off via the dwell mechanism so we retry once it becomes active."""
+        """Put the current target back at the front of the queue and use
+        the dwell timer as a backoff before we retry."""
         if self.current_name is not None:
             self.queue.insert(0, self.current_name)
         self.current_name = None
@@ -567,9 +506,9 @@ class TourExecutor(Node):
         )
 
     def _cancel_active_goal(self) -> None:
-        # Bumping the generation invalidates any in-flight goal-response or
-        # result callbacks for the current goal, so they can't drive the FSM
-        # after _set_tour has moved us to a new state.
+        # Bump the generation first so any in-flight goal-response or
+        # result callbacks for the previous goal bail out instead of
+        # driving the FSM after we've already moved to a new state.
         self._goal_generation += 1
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
@@ -587,12 +526,10 @@ class TourExecutor(Node):
                 self.current_name = None
                 self.dwell_started_ns = None
                 self._publish_status(f"dwell complete at {prev}")
-                # Replan from the just-reached pose: re-run TSP over what's
-                # left so the next target is the closest remaining landmark
-                # to where we actually are. Without this, _dispatch_next
-                # would just pop queue[0] from the original plan, which
-                # ignores any mid-tour additions or drift since the last
-                # plan was computed.
+                # Re-run TSP from the pose we just reached so the next
+                # target is whichever remaining landmark is closest, and
+                # so any landmarks added mid-tour since the last plan
+                # get picked up too.
                 if self.queue:
                     remaining = list(self.queue)
                     self.queue = []
@@ -606,32 +543,17 @@ class TourExecutor(Node):
                     self._publish_status("tour complete")
                     self.get_logger().info("Tour complete.")
 
-        # Heartbeat: republish current status every tick so observers (including
-        # default-VOLATILE subscribers like `ros2 topic echo`) always see a
-        # 2 Hz pulse confirming the FSM is alive. NAVIGATING transitions are
-        # event-driven (via _on_nav_result), so there's no polling work here.
+        # Heartbeat at 2 Hz so default-VOLATILE subscribers like
+        # `ros2 topic echo` keep seeing that the FSM is alive.
         self._publish_status()
 
     def _set_state(self, new_state: State) -> None:
-        """Single chokepoint for FSM transitions. ALL post-__init__
-        state writes must go through here.
+        """Every FSM transition has to go through here.
 
-        Routing every transition through one method lets the visual-
-        cue rotation be driven by state ENTRY/EXIT instead of by a
-        free-running timer that polls self.state. The previous design
-        kept publishing CCW/CW cmd_vel right up until the moment
-        Nav2's controller_server started publishing its own commands;
-        the create3 base saw the two streams overlap and the robot
-        looked like it was being yanked in opposite directions on
-        every PLANNING->NAVIGATING and DWELLING->NAVIGATING hand-off.
-        Now every cue->non-cue transition emits a single decisive
-        zero cmd_vel, then yields the topic.
-
-        Cue selection per state (see also CUE_*_WZ class constants):
-          IDLE       -> silent (joystick can drive)
-          PLANNING   -> clockwise spin ("thinking")
-          NAVIGATING -> silent (Nav2 owns cmd_vel)
-          DWELLING   -> counter-clockwise spin ("look at me")
+        The cue rotation gets started and stopped on state entry and
+        exit, not from a timer that polls self.state. The old version
+        kept publishing cue cmd_vel as Nav2 took over, and the create3
+        saw fighting commands on every PLANNING -> NAVIGATING handoff.
         """
         if new_state == self.state:
             return
@@ -646,12 +568,10 @@ class TourExecutor(Node):
         else:  # IDLE or NAVIGATING -- no cue motion
             self._active_cue_wz = None
 
-        # Hand-off cleanly: if we were producing a cue and we no longer
-        # are, stop the rotation explicitly before the next owner of
-        # /cmd_vel takes over. Cue->cue transitions (e.g. DWELLING->
-        # PLANNING from a mid-flight tour_config) skip this and just
-        # update the angular velocity, so direction reversals are
-        # picked up on the next _cue_tick.
+        # If we were emitting a cue and we aren't anymore, send one
+        # explicit zero cmd_vel before yielding the topic. Cue-to-cue
+        # transitions just update the angular velocity and let the
+        # next _cue_tick pick it up.
         if prev_cue is not None and self._active_cue_wz is None:
             self._publish_cue_velocity(0.0)
 
@@ -663,27 +583,17 @@ class TourExecutor(Node):
         self.cmd_vel_pub.publish(msg)
 
     def _cue_tick(self) -> None:
-        """Republish the currently active cue rotation at 10 Hz.
+        """Republish the active cue rotation at 10 Hz so the create3's
+        velocity timeout doesn't stop it. No-op when no cue is active.
 
-        Cue selection happens in _set_state at transition time -- this
-        timer just keeps fresh commands flowing to the create3 base so
-        it doesn't trip its velocity-timeout safety stop. When no cue
-        is active (IDLE / NAVIGATING) this is a no-op, so /cmd_vel is
-        fully owned by the joystick or Nav2 respectively.
-
-        Bypasses velocity_smoother and collision_monitor on purpose:
-        the cue is pure in-place rotation, the global_costmap's
-        inflation already guarantees enough wall clearance for the
-        robot's 0.22m radius to rotate safely, and the speeds are
-        conservative (CUE_*_WZ = 0.5 rad/s = ~28 deg/s).
+        We bypass velocity_smoother and collision_monitor here because
+        the cue is just in-place rotation, and the global costmap's
+        inflation already gives the robot's 0.22m radius enough room.
         """
         if self._active_cue_wz is None:
             return
         self._publish_cue_velocity(self._active_cue_wz)
 
-    # ----------------------------------------------------------------------
-    # Pose construction
-    # ----------------------------------------------------------------------
     def _landmark_to_pose(self, name: str) -> PoseStamped:
         lm = self.landmarks[name]
         pose = PoseStamped()

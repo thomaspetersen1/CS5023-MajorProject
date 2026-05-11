@@ -60,7 +60,7 @@ Source `install/setup.bash` in every new terminal that runs `ros2 ...` against t
 
 ### Tour Guide (main launch):
 
-**Terminal 1 — on the robot SSH session, start everything:**
+**Terminal 1, on the robot SSH session, start everything:**
 
 ```bash
 ros2 launch tour_guide tour_guide.launch.py start_tour_nodes:=true
@@ -71,9 +71,9 @@ Wait ~30 seconds for Nav2 to come up and the tour nodes to start.
 **In RViz (opens automatically):**
 
 - Confirm the map is visible
-- Click **2D Pose Estimate** and click+drag on the map to set the robot's starting position and orientation — AMCL requires this before navigation works
+- Click **2D Pose Estimate** and click+drag on the map to set the robot's starting position and orientation. AMCL needs this before navigation will work.
 
-**Terminal 2 — start the tour (after setting initial pose):**
+**Terminal 2, start the tour after setting the initial pose:**
 
 ```bash
 ros2 service call /start_tour std_srvs/srv/Trigger
@@ -82,7 +82,7 @@ ros2 service call /start_tour std_srvs/srv/Trigger
 > Note: the service only exists once tour_executor finishes initializing (~30s after launch).
 > Confirm it's up first: `ros2 service list | grep start_tour`
 
-**Terminal 3 — monitor tour progress:**
+**Terminal 3, monitor tour progress:**
 
 ```bash
 ros2 topic echo /tour_status
@@ -90,7 +90,7 @@ ros2 topic echo /tour_status
 
 Expected state sequence: `IDLE` → `PLANNING` → `NAVIGATING` → `DWELLING` → repeat → `IDLE` (tour complete)
 
-**Terminal 4 — interactive landmark CLI (request stops mid-tour):**
+**Terminal 4, interactive landmark CLI for requesting stops mid-tour:**
 
 ```bash
 ros2 run tour_guide tour_cli
@@ -98,14 +98,14 @@ ros2 run tour_guide tour_cli
 
 REPL commands:
 
-- `l` — list available landmarks (numbered)
-- `s` — show current tour status (state, current target, remaining, visited)
-- `a <name|#> ...` — queue landmark(s) for visit; can also type a bare number/name
-- `c` — cancel the active tour
-- `h` — help
-- `q` — quit
+- `l` - list available landmarks, numbered
+- `s` - show current tour status: state, current target, remaining, visited
+- `a <name|#> ...` - queue one or more landmarks for visit, or just type a bare number/name
+- `c` - cancel the active tour
+- `h` - help
+- `q` - quit
 
-When you queue a new landmark, the executor cancels the current goal and re-runs TSP from the robot's live pose, so the closest unvisited landmark (which may be the one you just added) becomes the new target. After each arrival it also re-runs TSP from the just-reached pose.
+When you queue a new landmark, the executor cancels the current goal and re-runs TSP from the robot's live pose, so the closest unvisited landmark becomes the new target. That might end up being the one you just added. After each arrival it also re-runs TSP from the pose it just reached.
 
 Override the landmarks file:
 
@@ -113,7 +113,7 @@ Override the landmarks file:
 ros2 run tour_guide tour_cli --ros-args -p landmarks_file:=/abs/path/to/landmarks.yaml
 ```
 
-**Override dwell duration (longer / shorter spin on arrival):**
+**Override the dwell duration for a longer or shorter spin on arrival:**
 
 ```bash
 ros2 run tour_guide tour_executor --ros-args -p dwell_seconds:=8.0
@@ -123,7 +123,7 @@ ros2 run tour_guide tour_executor --ros-args -p dwell_seconds:=8.0
 
 ### rosbridge (WebSocket bridge for the web UI):
 
-The lab machines don't allow apt-installing `ros-jazzy-rosbridge-suite`, so we build it from source inside the workspace. Once-per-clone setup:
+The lab machines won't let us apt-install `ros-jazzy-rosbridge-suite`, so we build it from source inside the workspace. You only need to do this once per clone:
 
 ```bash
 # 1. Clone rosbridge_suite at a Jazzy-compatible tag into src/
@@ -171,13 +171,13 @@ Open `http://localhost:3000` in firefox/chrome on the lab PC with rosbridge runn
 ### Map Maker:
 
 ```bash
-# Terminal 1 — start SLAM + RViz
+# Terminal 1, start SLAM and RViz
 ros2 launch tour_guide map_maker.launch.py
 
-# Terminal 2 — drive the robot around
+# Terminal 2, drive the robot around
 ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -p stamped:=true
 
-# Terminal 3 — once the map looks complete in RViz, save it
+# Terminal 3, once the map looks complete in RViz, save it
 ros2 run nav2_map_server map_saver_cli \
     -f ~/projects/CS5023-MajorProject/src/tour_guide/maps/map1
 ```
@@ -193,7 +193,7 @@ The TSP heuristic in `tour_guide/tsp.py` has unit tests that don't need ROS or t
 python -m pytest src/tour_guide/test/test_tsp.py -v
 ```
 
-The tests load `src/tour_guide/config/landmarks.yaml` and check `nearest_neighbor_order` against three starting poses: `None` (no AMCL pose yet), `(0, 0)` (map origin), and `(-3, -8)` (near the charging stations). If you edit `landmarks.yaml`, the expected orders in `test_tsp.py` need to be recomputed.
+The tests load `src/tour_guide/config/landmarks.yaml` and check `nearest_neighbor_order` against three starting poses. `None` covers the case where AMCL hasn't published a pose yet, `(0, 0)` is the map origin, and `(-3, -8)` puts us near the charging stations. If you edit `landmarks.yaml`, the expected orders in `test_tsp.py` need to be recomputed.
 
 If you also want the lab's `flake8` / `pep257` / copyright checks, run them through colcon:
 

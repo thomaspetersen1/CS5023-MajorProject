@@ -1,9 +1,8 @@
 """Nearest-neighbor TSP heuristic for tour routing.
 
-Pure-Python module with no ROS imports — unit-testable in isolation.
-The deliberative layer's planner imports this; replace the body of
-:func:`nearest_neighbor_order` with a smarter heuristic while keeping
-the signature stable.
+No ROS imports here so this can be tested on its own. route_planner
+imports nearest_neighbor_order, so if we ever swap in a smarter
+heuristic we just keep the signature the same.
 """
 from __future__ import annotations
 
@@ -14,16 +13,13 @@ def nearest_neighbor_order(
     start: tuple[float, float] | None,
     points: list[tuple[str, float, float]],
 ) -> list[str]:
-    """Return point names in nearest-neighbor visit order from ``start``.
+    """Return the point names in nearest-neighbor visit order, starting
+    from `start`.
 
-    Args:
-        start: ``(x, y)`` starting position, or ``None`` if no pose is
-            available yet (e.g. AMCL hasn't published).
-        points: List of ``(name, x, y)`` triples to visit.
-
-    Returns:
-        Names in visit order. If ``start`` is ``None``, the input order
-        is returned unchanged.
+    `start` is an (x, y) pose, or None when we don't have one yet
+    because AMCL hasn't published. `points` is a list of (name, x, y)
+    triples. If `start` is None we just return the input order
+    untouched.
     """
     if start is None:
         return [name for name, _, _ in points]

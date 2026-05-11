@@ -1,12 +1,12 @@
-"""Interactive CLI to request landmark visits mid-tour.
+"""Interactive CLI for adding landmark visits mid-tour.
 
-Subscribes to ``/tour_status`` to track the executor's current target and
-remaining queue, and publishes JSON to ``/tour_config`` to request that
-additional landmarks be appended to the active tour. The executor's
-mid-flight replan logic preserves the current target and re-runs TSP over
-``[current_target] + remaining + requested``.
+We subscribe to /tour_status to track what the executor is currently
+doing, and publish JSON to /tour_config to ask for more landmarks to
+be tacked onto the active tour. The executor's mid-flight replan
+keeps the current target and re-runs TSP over
+[current_target] + remaining + requested.
 
-Usage::
+Run with:
 
     ros2 run tour_guide tour_cli
     ros2 run tour_guide tour_cli --ros-args -p landmarks_file:=/path/to/landmarks.yaml
@@ -65,7 +65,8 @@ class TourCLI(Node):
             return None if self._status is None else dict(self._status)
 
     def request(self, requested: list[str]) -> list[str]:
-        """Build new tour list and publish to /tour_config. Returns the list sent."""
+        """Build the new tour list, publish it to /tour_config, and
+        return whatever was actually sent."""
         status = self.snapshot()
         current = (status or {}).get("current_target")
         remaining = list((status or {}).get("remaining") or [])
@@ -102,7 +103,7 @@ def print_landmarks(names: list[str]) -> None:
 
 def print_status(status: Optional[dict]) -> None:
     if status is None:
-        print("\nNo /tour_status received yet — is tour_executor running?\n")
+        print("\nNo /tour_status received yet. Is tour_executor running?\n")
         return
     print()
     print(f"  state:          {status.get('state')}")
@@ -168,7 +169,7 @@ def repl(node: TourCLI) -> None:
             print(f"Sent tour ({len(tour)}): {tour}")
             continue
 
-        # Bare number/name shortcut: treat as `add`
+        # bare number/name shortcut, treat it as `add`
         resolved = []
         bad = []
         for token in parts:

@@ -1,7 +1,8 @@
-"""Publish configured tour landmarks for clients such as web UIs.
+"""Publishes the configured tour landmarks so clients like the web UI
+can pick them up.
 
-The project avoids custom message types, so landmarks are published as a
-latched JSON payload on ``/landmarks`` using ``std_msgs/String``.
+We don't use custom message types in this project, so the landmarks
+go out as a latched JSON payload on /landmarks via std_msgs/String.
 """
 from __future__ import annotations
 

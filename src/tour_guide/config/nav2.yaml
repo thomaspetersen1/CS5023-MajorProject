@@ -1,36 +1,37 @@
 bt_navigator:
   ros__parameters:
-    # NOTE: autostart_node:true here causes bt_navigator to self-activate
-    # in parallel with planner_server. bt_navigator.on_activate() loads
-    # the BT XML which tries to bind to /compute_path_to_pose; if
-    # planner_server hasn't finished its own self-activate yet, the bind
-    # times out and bt_navigator self-deactivates to inactive [2].
-    # We accept that the first self-activate may fail and recover by
-    # explicitly re-activating bt_navigator from tour_executor once
-    # /compute_path_to_pose is known to be advertised -- see
+    # autostart_node:true here makes bt_navigator self-activate in
+    # parallel with planner_server. bt_navigator.on_activate() loads
+    # the BT XML and tries to bind to /compute_path_to_pose, so if
+    # planner_server hasn't finished activating yet the bind times out
+    # and bt_navigator self-deactivates to inactive. We just let the
+    # first attempt fail and recover by re-activating bt_navigator
+    # from tour_executor once /compute_path_to_pose is up. See
     # _force_activate_bt_navigator() in tour_executor.py.
-    # On this turtlebot4 image the surrounding lifecycle_manager_navigation
-    # empirically does NOT drive configure/activate on these nodes, so
-    # autostart_node has to stay -- without it nothing comes up at all.
+    # On this turtlebot4 image lifecycle_manager_navigation doesn't
+    # actually drive configure/activate on these nodes, so we have to
+    # keep autostart_node on or nothing comes up at all.
     autostart_node: true
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
-    # 1000 ms is the Nav2 default but races with planner_server / controller_server
-    # discovery during simultaneous bringup on this image (Fast DDS Discovery
-    # Server + RViz + nav2 all coming up together). Symptom when too short:
+    # The Nav2 default of 1000 ms races with planner_server and
+    # controller_server discovery when we bring everything up at once
+    # on this image (Fast DDS Discovery Server, RViz, and nav2 all
+    # coming up together). When it's too short you see:
     #   [bt_navigator] "compute_path_to_pose" action server not available after
     #   waiting for 1.00s -> Exception when loading BT -> Deactivating.
-    # 10 s only matters during the activation window; no steady-state cost.
+    # 10 s only costs us during activation, nothing at steady state.
     wait_for_service_timeout: 10000
     action_server_result_timeout: 900.0
-    # Explicit BT XML paths. Nav2 docs say leaving these empty should fall
-    # back to the package defaults, but in practice some Jazzy builds (and
-    # the TurtleBot 4 image) fail on_configure when the param is undeclared,
-    # leaving bt_navigator stuck in INACTIVE. Pointing at the canonical
-    # install paths makes activation deterministic.
+    # Explicit BT XML paths. The Nav2 docs say leaving these empty
+    # should fall back to package defaults, but in practice some Jazzy
+    # builds and the TurtleBot 4 image fail on_configure when the
+    # param is undeclared, and bt_navigator gets stuck in INACTIVE.
+    # Pointing at the canonical install paths makes activation
+    # deterministic.
     default_nav_to_pose_bt_xml: /opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml
     default_nav_through_poses_bt_xml: /opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_through_poses_w_replanning_and_recovery.xml
     navigators: ["navigate_to_pose", "navigate_through_poses"]
@@ -50,11 +51,12 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    # Was 0.3s -- way too tight. MPPI gets ~6 control cycles to escape an
-    # inflation halo before the BT yanks it into RecoveryFallback (Spin),
-    # which on this stack times out for the same reason MPPI was struggling.
-    # 2.0s lets the controller produce sustained motion on a feasible-but-
-    # tight path without tripping recovery.
+    # Was 0.3s, way too tight. At that value MPPI only gets about 6
+    # control cycles to escape an inflation halo before the BT pulls
+    # it into RecoveryFallback (Spin), and Spin on this stack times
+    # out for the same reason MPPI was already struggling. 2.0s lets
+    # the controller make sustained progress on a tight-but-feasible
+    # path without tripping recovery.
     failure_tolerance: 2.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
@@ -71,29 +73,30 @@ controller_server:
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 0.25
     FollowPath:
-      # RotationShimController wraps MPPI: when the path's initial heading
-      # is more than angular_dist_threshold (45 deg) off from the robot's
-      # current yaw, the shim rotates the robot in place until aligned,
-      # THEN hands off to MPPI to drive forward along the path. With
-      # rotate_to_goal_heading:true it also rotates at the end to match
-      # the goal's yaw. Without this, MPPI's PreferForwardCritic fights
-      # the geometrically-correct "back up + turn around" motion the
-      # planner gives it when the robot is parked facing away from the
-      # next landmark, producing the tiny -0.08 m/s commands we saw.
+      # RotationShimController wraps MPPI. When the path's initial
+      # heading is more than angular_dist_threshold (45 deg) off from
+      # the robot's current yaw, the shim spins in place until things
+      # line up and only then hands off to MPPI to drive forward along
+      # the path. With rotate_to_goal_heading:true it also rotates at
+      # the end to match the goal's yaw. Without the shim, MPPI's
+      # PreferForwardCritic fights the geometrically-correct
+      # "back up and turn around" motion the planner produces when
+      # the robot is parked facing away from the next landmark, and
+      # we ended up with those tiny -0.08 m/s commands.
       plugin: "nav2_rotation_shim_controller::RotationShimController"
       primary_controller: "nav2_mppi_controller::MPPIController"
       angular_dist_threshold: 0.785
       forward_sampling_distance: 0.5
-      # Tour-guide pacing: 1.8 rad/s in-place rotation looked abrupt /
-      # whippy when the next landmark was behind the robot. 0.8 rad/s
-      # (~46 deg/s) is still clearly visible but graceful.
+      # Pacing for the tour. 1.8 rad/s in-place rotation looked abrupt
+      # and whippy when the next landmark was behind the robot. 0.8
+      # rad/s is about 46 deg/s, still clearly visible but graceful.
       rotate_to_heading_angular_vel: 0.8
       max_angular_accel: 3.2
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: true
-      # All params below this point are MPPI's; the shim instantiates
-      # MPPIController as its primary_controller, which reads from the
-      # same FollowPath namespace.
+      # Everything below this point is MPPI's. The shim instantiates
+      # MPPIController as its primary_controller, and MPPI reads from
+      # the same FollowPath namespace as the shim.
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
@@ -104,11 +107,12 @@ controller_server:
       az_max: 3.5
       vx_std: 0.2
       vy_std: 0.2
-      # Tour-guide pacing: was wz_std=0.4 / wz_max=1.9 / vx_max=0.5.
-      # That sample variance + max angular range was the dominant
-      # contributor to the visible L/R jitter while tracking a path.
-      # Halving wz_std and capping the angular/forward maxes gives
-      # smoother MPPI commands without changing path feasibility.
+      # Pacing for the tour. The old values were wz_std=0.4,
+      # wz_max=1.9, vx_max=0.5. That sample variance and angular
+      # range together were the main cause of the visible left/right
+      # jitter while the robot was tracking a path. Halving wz_std
+      # and capping the angular and forward maxes gives much smoother
+      # MPPI commands and doesn't change path feasibility.
       wz_std: 0.2
       vx_max: 0.3
       vx_min: -0.35
@@ -196,32 +200,37 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.22
-      # Republish the full costmap_raw every publish cycle, not just on
-      # activation. behavior_server's CostmapSubscriber subscribes to
-      # costmap_raw + costmap_raw_updates with transient_local; if the
-      # late-joining subscription misses the one-shot full map (a known
-      # Jazzy QoS-race symptom across separate processes), it ends up
-      # receiving update msgs forever with nothing to apply them to and
-      # logs "No costmap received." on every update. always_send_full_costmap
-      # makes the full snapshot keep flowing so the subscriber syncs.
+      # Republish the full costmap_raw on every publish cycle, not just
+      # at activation. behavior_server's CostmapSubscriber subscribes
+      # to costmap_raw and costmap_raw_updates with transient_local,
+      # and if it joins late and misses the one-shot full map (this is
+      # a known Jazzy QoS race across separate processes), it just
+      # gets update msgs forever with nothing to apply them to, and
+      # spams "No costmap received." on every update. With
+      # always_send_full_costmap on, the full snapshot keeps flowing
+      # so the subscriber can sync.
       always_send_full_costmap: true
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        # Was 0.70 -- pinned the robot inside its own inflation whenever a
-        # landmark sat within 70cm of a wall (e.g. cardboard_corner), which
-        # made every subsequent goal MPPI's local minimum. 0.40 still gives
-        # an 18cm halo beyond robot_radius (0.22), which is plenty.
+        # Was 0.70, which pinned the robot inside its own inflation
+        # any time a landmark sat within 70cm of a wall. cardboard_corner
+        # was a good example, and once we were sitting in inflation,
+        # every goal after that became a local minimum for MPPI. 0.40
+        # still gives an 18cm halo past robot_radius (0.22) which is
+        # plenty of clearance.
         inflation_radius: 0.40
-      # Was VoxelLayer with origin_z:0.0 / z_voxels:16 -> z range [0, 0.8].
-      # On this TF setup the rplidar's z in odom shows up as -0.38, which is
-      # *below* the voxel grid. VoxelLayer then logs "Sensor origin ... is
-      # out of map bounds. The costmap cannot raytrace for it." and can only
-      # MARK obstacles, never CLEAR them -- the local costmap accumulates
-      # ghost obstacles indefinitely, MPPI can't find feasible trajectories
-      # through them, and follow_path aborts in a loop. ObstacleLayer is 2D
-      # so it doesn't care about the sensor's z; same behavior, no z trap.
+      # We used to use VoxelLayer with origin_z:0.0, z_voxels:16, so
+      # the z range was [0, 0.8]. On this TF setup the rplidar's z in
+      # odom shows up as -0.38, which is *below* the voxel grid.
+      # VoxelLayer then logs "Sensor origin ... is out of map bounds.
+      # The costmap cannot raytrace for it." and can only MARK
+      # obstacles, never CLEAR them. So the local costmap fills up
+      # with ghost obstacles, MPPI can't find a feasible trajectory
+      # through them, and follow_path just aborts in a loop.
+      # ObstacleLayer is 2D so it doesn't care about the sensor's z
+      # and we get the same obstacle behavior without the z trap.
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -250,7 +259,7 @@ global_costmap:
       robot_radius: 0.22
       resolution: 0.05
       track_unknown_space: true
-      # See note on local_costmap.always_send_full_costmap -- same reason.
+      # Same QoS-race reason as local_costmap.always_send_full_costmap above.
       always_send_full_costmap: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -338,10 +347,11 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
     max_velocity: [0.5, 0.0, 2.0]
     min_velocity: [-0.5, 0.0, -2.0]
-    # Tour-guide pacing: was [2.5, 0, 3.2] / [-2.5, 0, -3.2]. Those let
-    # the smoother slew the angular velocity from 0 to wz_max in ~0.6s,
-    # producing the visible "yank" feel on every direction change.
-    # 1.0 m/s^2 linear and 1.5 rad/s^2 angular keep the motion fluid
+    # Pacing for the tour. The old values were [2.5, 0, 3.2] and
+    # [-2.5, 0, -3.2], which let the smoother slew the angular
+    # velocity from 0 to wz_max in around 0.6s. That's where the
+    # visible "yank" on every direction change was coming from.
+    # 1.0 m/s^2 linear and 1.5 rad/s^2 angular keeps the motion fluid
     # without throttling progress.
     max_accel: [1.0, 0.0, 1.5]
     max_decel: [-1.0, 0.0, -1.5]

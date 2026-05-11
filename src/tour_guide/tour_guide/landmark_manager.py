@@ -1,9 +1,9 @@
-"""Pure-Python landmark loader.
+"""Loads landmarks from YAML.
 
-No ROS imports — unit-testable in isolation. Returns the dict-of-dicts
-shape the executor and planner consume directly.
+No ROS imports here so this can be tested in isolation. Returns a
+dict-of-dicts that the executor and planner can use directly.
 
-YAML schema::
+YAML shape:
 
     frame_id: map
     landmarks:
@@ -18,12 +18,11 @@ import yaml
 def load_landmarks(path: str) -> dict[str, dict[str, float]]:
     """Load landmarks from a YAML file, keyed by name.
 
-    Each value is ``{"x": float, "y": float, "yaw": float}`` (yaw
-    defaults to 0.0 if absent).
+    Each value is {"x": float, "y": float, "yaw": float}. yaw defaults
+    to 0.0 when it isn't in the file.
 
-    Raises:
-        FileNotFoundError: If ``path`` does not exist.
-        ValueError: If the file is malformed or empty.
+    Raises FileNotFoundError if the path doesn't exist, and ValueError
+    if the YAML is empty or doesn't have the expected shape.
     """
     with open(path) as f:
         data = yaml.safe_load(f) or {}
